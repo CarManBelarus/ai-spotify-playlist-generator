@@ -66,14 +66,8 @@ function generateAndCreateSpotifyPlaylist() {
     const geminiApiKey = getGeminiApiKey_();
 
     // --- 2. Fetch and Prepare Track Data ---
-    Logger.log(`Fetching content of SavedTracks.json (ID: ${AI_CONFIG.GOOGLE_DRIVE_FILE_ID}) from Google Drive...`);
-    const savedTracksJsonContent = getFileContentFromDrive_(AI_CONFIG.GOOGLE_DRIVE_FILE_ID);
-    if (!savedTracksJsonContent) {
-      throw new Error('Failed to retrieve content from SavedTracks.json.');
-    }
-    Logger.log(`Received ${savedTracksJsonContent.length} characters from the file.`);
-
-    const randomTracksJsonString = prepareTracksForPrompt_(savedTracksJsonContent);
+    
+    const randomTracksJsonString = prepareTracksForPrompt_();
 
     // --- 3. Create the Prompt for Gemini ---
     Logger.log('Creating the prompt text for Gemini AI...');
@@ -229,24 +223,24 @@ function updatePlaylistIncrementally_(foundSpotifyTracks) {
  * @param {string} jsonContent The content of the SavedTracks.json file.
  * @return {string} A compact JSON string of random tracks.
  */
-function prepareTracksForPrompt_(jsonContent) {
-  Logger.log('Parsing SavedTracks.json and sampling tracks...');
-  let allTracks;
-  try {
-    allTracks = JSON.parse(jsonContent);
-    if (!Array.isArray(allTracks)) {
-      throw new Error('The content of SavedTracks.json is not an array.');
-    }
-    Logger.log(`Successfully parsed ${allTracks.length} tracks.`);
-  } catch (e) {
-    Logger.log(`Error parsing SavedTracks.json: ${e}`);
-    throw new Error('Could not parse the content of SavedTracks.json.');
+function prepareTracksForPrompt_() {
+  Logger.log('Parsing SavedTracks.json using Goofy Cache and sampling tracks...');
+  
+  // 1. Use Goofy's Cache.read to handle file reading and JSON parsing in one step.
+  // This is much cleaner and more robust than manual parsing.
+  const allTracks = Cache.read('SavedTracks.json');
+  
+  if (!allTracks || allTracks.length === 0) {
+      throw new Error('Could not read or parse tracks from SavedTracks.json using Cache.read.');
   }
+  Logger.log(`Successfully read ${allTracks.length} tracks using Goofy.`);
 
+  // 2. The rest of the logic remains the same: take a random sample.
   Logger.log(`Randomly selecting ${AI_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI} tracks for AI analysis...`);
   const randomTracks = Selector.sliceRandom(allTracks, AI_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI);
   Logger.log(`Selected ${randomTracks.length} random tracks for analysis.`);
   
+  // 3. Return the sample as a compact JSON string for the AI prompt.
   return JSON.stringify(randomTracks);
 }
 
