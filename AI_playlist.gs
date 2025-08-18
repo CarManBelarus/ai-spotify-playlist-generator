@@ -27,8 +27,8 @@ const AI_CONFIG = {
   // === AI & PLAYLIST SETTINGS ===
 
   // The Gemini model to use for generating track recommendations.
-  // 'gemini-1.5-pro' is powerful, 'gemini-1.5-flash' is faster and cheaper.
-  GEMINI_MODEL: 'gemini-1.5-pro',
+  // 'gemini-2.5-pro' is powerful, 'gemini-2.5-flash' is faster and cheaper.
+  GEMINI_MODEL: 'gemini-2.5-flash',
 
   // The number of random tracks from your library to be analyzed by the AI.
   // A larger sample size gives the AI a better understanding of your taste but takes longer.
@@ -280,7 +280,6 @@ ${tracksJsonString}
     -   ~30% should be a bold "step aside": experiment with less obvious adjacent genres (e.g., if there's post-punk, suggest coldwave or minimal synth), different eras (70s, 2020s), or geographies (e.g., the Japanese alternative scene).
 -   **Local Scene:** About 30% of the artists in the final list should be from Belarus.
 -   **Language Filter:** Avoid songs in Russian.
--   **Spelling:** For Belarusian bands, use the most common spelling of their name in the public space (Cyrillic or Latin).
 
 [Output Format]:
 -   The response must be EXCLUSIVELY a valid JSON array.
@@ -359,7 +358,7 @@ Cinematic wide-angle shot of a lone, glowing figure standing in a rain-slicked, 
 
   try {
     const geminiApiKey = getGeminiApiKey_();
-    const imagePromptText = callGeminiApi_(geminiApiKey, 'gemini-1.5-pro', promptForPrompt); 
+    const imagePromptText = callGeminiApi_(geminiApiKey, 'gemini-2.5-flash', promptForPrompt); 
     return imagePromptText ? imagePromptText.replace(/`/g, '') : null;
   } catch (e) {
     Logger.log(`Failed to create the image prompt: ${e}`);
@@ -481,7 +480,7 @@ function callGeminiApi_(apiKey, model, prompt) {
  */
 function callGeminiImageGenerationApi_(imagePrompt) {
   const apiKey = getGeminiApiKey_();
-  const model = 'gemini-1.5-flash-001';
+  const model = 'gemini-2.0-flash-preview-image-generation';
   const api = 'streamGenerateContent';
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:${api}?key=${apiKey}`;
 
