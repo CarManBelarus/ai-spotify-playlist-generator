@@ -252,10 +252,21 @@ function prepareTracksForPrompt_() {
 function createTrackRecommendationPrompt_(tracksJsonString) {
   // This prompt is in Belarusian. You can translate or modify it to fit your needs.
   // The key is to be very specific about the AI's role, context, task, and output format.
+
+  // Get and format the current date
+  const today = new Date();
+  const formattedDate = today.toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'long',
+    day: 'numeric'
+  });
+
   return `
 [Role]: You are a music curator and researcher specializing in finding unexpected connections between different music scenes, genres, and eras. Your strength is finding a 70s Brazilian psychedelic rock band that would sound relevant to a modern British post-punk fan.
 
 [Context]: I am providing you with a random sample of tracks from my music library. Your goal is to analyze my tastes and create a small but very precise playlist for discovering new music.
+
+[Temporal Context]: Today's date is ${formattedDate}. Use this to infer the current season and mood (e.g., late summer, autumn melancholy, winter introspection) and let it subtly influence a portion of your recommendations.
 
 [Input Data]: A list of tracks in JSON format.
 \`\`\`json
@@ -264,7 +275,7 @@ ${tracksJsonString}
 
 [Task]:
 1.  Analyze the input data to identify the main genres, moods, eras, and characteristic features of my musical taste.
-2.  Based on this analysis, generate a list of 100 music tracks.
+2.  Based on your analysis of my taste and the temporal context, generate a list of 100 music tracks for discovering new music.
 
 [Constraints and Rules]:
 -   **No Duplicates:** DO NOT include tracks that are already in the input data.
