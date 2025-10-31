@@ -3,7 +3,7 @@
  * Main file for working with the Gemini AI to create Spotify playlists.
  * This script analyzes your library, gets AI recommendations, and generates custom cover art.
  *
- * Version: 2.0 (Independent of library modifications, improved search accuracy)
+ * Version: 3.0 (Reliable incremental updates, Hugging Face covers, enhanced cleanup)
  */
 
 // ===============================================================
@@ -22,8 +22,8 @@ const AI_CONFIG = {
   // === AI & PLAYLIST SETTINGS ===
 
   // The Gemini model to use for generating track recommendations.
-  // 'gemini-2.5-pro' is powerful; 'gemini-2.5-flash' is faster.
-  GEMINI_MODEL: 'gemini-2.5-pro',
+  // 'gemini-1.5-pro-latest' is powerful; 'gemini-1.5-flash-latest' is faster.
+  GEMINI_MODEL: 'gemini-1.5-pro-latest',
 
   // The number of random tracks from your library to be analyzed by the AI.
   // A larger sample gives the AI a better understanding of your taste. 700 is a good balance.
@@ -35,6 +35,32 @@ const AI_CONFIG = {
 
   // The template for the playlist name. {date} will be replaced with the current date.
   PLAYLIST_NAME_TEMPLATE: 'AI Playlist from {date}',
+
+  // === COVER ART GENERATION SETTINGS (VIA HUGGING FACE) ===
+
+  IMAGE_GENERATION: {
+    // Enable or disable cover art generation (true/false)
+    ENABLED: true,
+    
+    // Select the model for generation. Just copy the ID from one of the options below.
+    // Recommendation: JUGGERNAUT_XL or PHOTO_REALISTIC produce excellent results.
+    SELECTED_MODEL_ID: 'RunDiffusion/Juggernaut-XL-v9',
+
+    // Available models (you can add your own found on Hugging Face)
+    AVAILABLE_MODELS: {
+      // --- RECOMMENDATIONS ---
+      JUGGERNAUT_XL: 'RunDiffusion/Juggernaut-XL-v9', // Very popular model for cinematic photorealism.
+      SD_3_MEDIUM: 'stabilityai/stable-diffusion-3-medium-diffusers', // Stable Diffusion 3: latest, very accurate model.
+      PHOTO_REALISTIC: 'playgroundai/playground-v2.5-1024px-aesthetic', // Excellent aesthetic model.
+      FLUX: 'black-forest-labs/FLUX.1-schnell', // Very fast and high-quality model.
+
+      // --- OTHER STYLES ---
+      ARTISTIC: 'openskyml/dreamshaper-xl-1-0', // Best for an artistic, "painted" style.
+      ANIME: 'cagliostrolab/animagine-xl-3.0', // Best for anime style.
+      TURBO: 'stabilityai/sdxl-turbo', // Very fast SDXL version for testing.
+      DEFAULT_SDXL: 'stabilityai/stable-diffusion-xl-base-1.0' // Standard Stable Diffusion XL.
+    }
+  },
 
   // === PLAYLIST CLEANUP SETTINGS (for the optional cleanUpPlaylist function) ===
 
@@ -76,7 +102,6 @@ function generateAndCreateSpotifyPlaylist() {
       return;
     }
 
-    // <<< --- NEW NORMALIZATION STEP --- >>>
     Logger.log('Normalizing queries before sending to Spotify...');
     const normalizedTracksToSearch = tracksToSearch.map(track => normalizeTrackQuery_(track));
 
@@ -89,7 +114,7 @@ function generateAndCreateSpotifyPlaylist() {
       return;
     }
 
-    updatePlaylistIncrementally_(foundSpotifyTracks);
+    updatePlaylistAndCover_(foundSpotifyTracks);
 
     Logger.log('Playlist creation/update process completed successfully.');
 
@@ -104,77 +129,82 @@ function generateAndCreateSpotifyPlaylist() {
 // ===============================================================
 
 /**
- * Incrementally updates the playlist: adds new tracks, trims old ones, and sets a new cover.
+ * [NEW VERSION] Comprehensively updates the playlist: adds new tracks in chunks,
+ * trims old ones to the limit, and updates metadata (name, description, cover).
  * @param {Array<Object>} foundSpotifyTracks An array of tracks recommended by the AI.
  */
-function updatePlaylistIncrementally_(foundSpotifyTracks) {
+function updatePlaylistAndCover_(foundSpotifyTracks) {
   Logger.log(`Getting existing tracks from playlist ID: ${AI_CONFIG.SPOTIFY_PLAYLIST_ID}...`);
   const existingPlaylistTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
   
   let newUniqueTracks = Selector.sliceCopy(foundSpotifyTracks);
   Filter.removeTracks(newUniqueTracks, existingPlaylistTracks);
-  Logger.log(`Found ${newUniqueTracks.length} new, unique tracks to add.`);
+  const newTracksCount = newUniqueTracks.length;
+  Logger.log(`Found ${newTracksCount} new, unique tracks to add.`);
 
-  if (newUniqueTracks.length === 0) {
-    Logger.log('No new tracks to add. The playlist remains unchanged.');
-    return;
-  }
-
-  let finalTrackList = [];
-  Combiner.push(finalTrackList, newUniqueTracks, existingPlaylistTracks);
-  Logger.log(`Total tracks after combining: ${finalTrackList.length}.`);
-
-  if (finalTrackList.length > AI_CONFIG.MAX_PLAYLIST_SIZE) {
-    const tracksToRemoveCount = finalTrackList.length - AI_CONFIG.MAX_PLAYLIST_SIZE;
-    Logger.log(`Playlist exceeds the limit of ${AI_CONFIG.MAX_PLAYLIST_SIZE}. Removing ${tracksToRemoveCount} oldest tracks...`);
-    finalTrackList.length = AI_CONFIG.MAX_PLAYLIST_SIZE;
-  }
-
-  Logger.log('Attempting to generate and process a new cover art...');
-  let coverImageBase64 = null;
-  let tempFile = null;
-
-  try {
-    const originalImageBase64 = generatePlaylistCover_(finalTrackList);
-    if (originalImageBase64) {
-      const imageBlob = Utilities.newBlob(Utilities.base64Decode(originalImageBase64), 'image/jpeg', 'temp_cover.jpg');
-      tempFile = DriveApp.createFile(imageBlob);
-      tempFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-      const imageUrlForResize = `https://drive.google.com/uc?id=${tempFile.getId()}`;
-      
-      Logger.log(`Attempting to resize the image via weserv.nl...`);
-      const resizeServiceUrl = `https://images.weserv.nl/?url=${encodeURIComponent(imageUrlForResize)}&w=600&h=600&q=90&output=jpg`;
-      const resizedResponse = UrlFetchApp.fetch(resizeServiceUrl, { 'muteHttpExceptions': true });
-      
-      if (resizedResponse.getResponseCode() === 200) {
-        coverImageBase64 = Utilities.base64Encode(resizedResponse.getBlob().getBytes());
-        Logger.log(`✅ Image successfully resized.`);
-      } else {
-        Logger.log(`⚠️ Image resizing service failed (Code: ${resizedResponse.getResponseCode()}). Skipping cover art update.`);
+  // --- STEP 1: Add new tracks (if any) ---
+  if (newTracksCount > 0) {
+    Logger.log(`Starting chunked addition of ${newTracksCount} tracks...`);
+    const CHUNK_SIZE = 100; // Spotify API limit
+    for (let i = 0; i < newTracksCount; i += CHUNK_SIZE) {
+      const chunk = newUniqueTracks.slice(i, i + CHUNK_SIZE);
+      Logger.log(`Adding chunk of ${chunk.length} tracks...`);
+      try {
+        Playlist.saveWithAppend({
+          id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
+          tracks: chunk,
+          position: 'begin' // Add new tracks to the beginning
+        });
+        if (newTracksCount > CHUNK_SIZE) Utilities.sleep(1000); // Pause between requests
+      } catch (e) {
+        Logger.log(`ERROR during track chunk addition: ${e.toString()}`);
       }
     }
-  } catch (e) {
-    Logger.log(`⚠️ An error occurred during cover art processing: ${e}.`);
-  } finally {
-    if (tempFile) {
-      try { tempFile.setTrashed(true); Logger.log('Temporary cover art file deleted.'); }
-      catch (e) { Logger.log(`Failed to delete temporary file: ${e}`); }
-    }
+    Logger.log('Chunked track addition completed.');
   }
 
+  // --- STEP 2: Trim the playlist to the size limit (if needed) ---
+  const currentTracksAfterAdd = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
+  if (currentTracksAfterAdd.length > AI_CONFIG.MAX_PLAYLIST_SIZE) {
+    const tracksToRemoveCount = currentTracksAfterAdd.length - AI_CONFIG.MAX_PLAYLIST_SIZE;
+    Logger.log(`Playlist exceeds the limit (${AI_CONFIG.MAX_PLAYLIST_SIZE}). Removing ${tracksToRemoveCount} oldest tracks...`);
+    const trimmedTracks = currentTracksAfterAdd.slice(0, AI_CONFIG.MAX_PLAYLIST_SIZE);
+    Playlist.saveWithReplace({
+      id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
+      tracks: trimmedTracks
+    });
+    Logger.log('Playlist successfully trimmed.');
+  }
+
+  // --- STEP 3: Update name, description, and cover art ---
+  const finalTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
+  
   const playlistName = AI_CONFIG.PLAYLIST_NAME_TEMPLATE.replace('{date}', new Date().toLocaleDateString('en-US'));
   const formattedDateTime = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMMM dd, yyyy, HH:mm');
 
-  const playlistData = {
-    id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
+  const payload = {
     name: playlistName,
-    tracks: finalTrackList,
-    description: `Last updated: ${formattedDateTime}. Added: ${newUniqueTracks.length} new. Total: ${finalTrackList.length}.`,
-    coverImage: coverImageBase64
+    description: `Last updated: ${formattedDateTime}. Added: ${newTracksCount} new. Total: ${finalTracks.length}.`
   };
 
-  Logger.log(`Saving ${finalTrackList.length} tracks ${coverImageBase64 ? 'and new cover' : ''} to playlist "${playlistName}"...`);
-  savePlaylistWithBase64Cover_(playlistData);
+  Logger.log(`Updating playlist name and description...`);
+  try {
+    SpotifyRequest.put(`${API_BASE_URL}/playlists/${AI_CONFIG.SPOTIFY_PLAYLIST_ID}`, payload);
+    Logger.log('✅ Name and description successfully updated.');
+  } catch (e) {
+    Logger.log(`⚠️ Error during playlist details update: ${e.toString()}`);
+  }
+
+  Logger.log('Attempting to generate and upload new cover art...');
+  const coverImageBase64 = generatePlaylistCover_(finalTracks);
+  if (coverImageBase64) {
+    try {
+      SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${AI_CONFIG.SPOTIFY_PLAYLIST_ID}/images`, coverImageBase64);
+      Logger.log('✅ Cover art successfully uploaded.');
+    } catch (e) {
+      Logger.log(`⚠️ Error during cover art upload: ${e.toString()}`);
+    }
+  }
 }
 
 // ===============================================================
@@ -219,6 +249,7 @@ ${tracksJsonString}
 - **Diversity:**
     - ~70% of the recommendations should closely match the identified tastes.
     - ~30% should be a bold "step aside": experiment with less obvious adjacent genres, different eras, or geographies.
+- **Genre Classics:** Be sure to include ~5 iconic hits from the dominant genre identified in the input data.
 - **Local Scene:** About 30% of the artists in the final list should be from Belarus.
 - **Language Filter:** Avoid songs in Russian.
 
@@ -245,21 +276,46 @@ ${tracksJsonString}
 //                     COVER ART GENERATION
 // ===============================================================
 
-function generatePlaylistCover_(tracks) {
+/**
+ * Main function for generating the playlist cover art.
+ * @param {Array<Object>} tracksForAnalysis An array of tracks to analyze for mood.
+ * @return {string | null} A Base64 encoded image or null.
+ */
+function generatePlaylistCover_(tracksForAnalysis) {
+  if (!AI_CONFIG.IMAGE_GENERATION.ENABLED) {
+    Logger.log('Cover art generation is disabled in settings.');
+    return null;
+  }
+
+  if (!tracksForAnalysis || tracksForAnalysis.length === 0) {
+    Logger.log('Playlist is empty, skipping cover art generation.');
+    return null;
+  }
+
   try {
-    const imagePrompt = createImagePromptFromTracks_(tracks);
+    const imagePrompt = createImagePromptFromTracks_(tracksForAnalysis);
     if (!imagePrompt) {
       Logger.log('Failed to create an image prompt.');
       return null;
     }
-    Logger.log(`Generated image prompt: "${imagePrompt}"`);
-    return callGeminiImageGenerationApi_(imagePrompt);
+    
+    const originalImageBase64 = callHuggingFaceApi_(imagePrompt);
+    if (!originalImageBase64) return null;
+    
+    // Attempt to resize the image for faster loading on Spotify
+    return resizeImage_(originalImageBase64);
+    
   } catch (error) {
-    Logger.log(`Error during cover art generation: ${error}`);
+    Logger.log(`⚠️ An error occurred during cover art generation: ${error.toString()}`);
     return null;
   }
 }
 
+/**
+ * Creates a text prompt for an image generator based on a list of tracks.
+ * @param {Array<Object>} tracks An array of tracks to analyze.
+ * @return {string | null} The generated prompt or null.
+ */
 function createImagePromptFromTracks_(tracks) {
   const trackSample = Selector.sliceRandom(tracks, 50); 
   const trackListString = trackSample.map(t => `${t.artists[0].name} - ${t.name}`).join('\n');
@@ -283,11 +339,47 @@ Cinematic wide-angle shot of a lone, glowing figure in a rain-slicked, neon-lit 
 
   try {
     const geminiApiKey = getGeminiApiKey_();
-    const imagePromptText = callGeminiApi_(geminiApiKey, 'gemini-2.5-flash', promptForPrompt); 
-    return imagePromptText ? imagePromptText.replace(/`/g, '') : null;
+    // Use a fast model to generate the prompt
+    const imagePromptText = callGeminiApi_(geminiApiKey, 'gemini-1.5-flash-latest', promptForPrompt); 
+    return imagePromptText ? imagePromptText.replace(/[`"']/g, '') : null;
   } catch (e) {
     Logger.log(`Failed to create the image prompt: ${e}`);
     return null;
+  }
+}
+
+/**
+ * Resizes an image using the external weserv.nl service.
+ * @param {string} originalBase64 The Base64 encoded image.
+ * @return {string} The resized Base64 image, or the original on failure.
+ */
+function resizeImage_(originalBase64) {
+  let tempFile = null;
+  try {
+    const imageBlob = Utilities.newBlob(Utilities.base64Decode(originalBase64), 'image/jpeg', 'temp_cover.jpg');
+    tempFile = DriveApp.createFile(imageBlob);
+    tempFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    const imageUrlForResize = `https://drive.google.com/uc?id=${tempFile.getId()}`;
+      
+    Logger.log(`Attempting to resize the image via weserv.nl...`);
+    const resizeServiceUrl = `https://images.weserv.nl/?url=${encodeURIComponent(imageUrlForResize)}&w=600&h=600&q=90&output=jpg`;
+    const resizedResponse = UrlFetchApp.fetch(resizeServiceUrl, { 'muteHttpExceptions': true });
+      
+    if (resizedResponse.getResponseCode() === 200) {
+      Logger.log(`✅ Image successfully resized.`);
+      return Utilities.base64Encode(resizedResponse.getBlob().getBytes());
+    } else {
+      Logger.log(`⚠️ Image resizing service failed (Code: ${resizedResponse.getResponseCode()}). Using original image.`);
+      return originalBase64;
+    }
+  } catch (e) {
+    Logger.log(`⚠️ An error occurred during image resizing: ${e}. Using original image.`);
+    return originalBase64;
+  } finally {
+    if (tempFile) {
+      try { tempFile.setTrashed(true); Logger.log('Temporary cover art file deleted.'); }
+      catch (e) { Logger.log(`Failed to delete temporary file: ${e}`); }
+    }
   }
 }
 
@@ -296,32 +388,7 @@ Cinematic wide-angle shot of a lone, glowing figure in a rain-slicked, neon-lit 
 // ===============================================================
 
 /**
- * [NEW - INDEPENDENT] Saves the playlist using standard Goofy functions and then
- * uploads the Base64 cover image separately. This avoids modifying the library.
- * @param {object} data - Playlist data object (id, name, tracks, description, coverImage).
- */
-function savePlaylistWithBase64Cover_(data) {
-  Logger.log('Executing standard save for tracks and metadata...');
-  Playlist.saveWithReplace({
-    id: data.id,
-    name: data.name,
-    description: data.description,
-    tracks: data.tracks
-  });
-
-  if (data.coverImage) {
-    Logger.log('Base64 cover image found. Attempting to upload...');
-    try {
-      SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${data.id}/images`, data.coverImage);
-      Logger.log('✅ Cover art successfully uploaded.');
-    } catch (e) {
-      Logger.log(`⚠️ Error during cover art upload: ${e.toString()}`);
-    }
-  }
-}
-
-/**
- * [NEW - NORMALIZER] Normalizes a track query string from the AI for maximum search accuracy.
+ * Normalizes a track query string from the AI for maximum search accuracy.
  * Includes transliteration from Cyrillic to Latin.
  * @param {string} rawQuery - The raw string from the AI.
  * @return {string} A cleaned and transliterated string ready for searching.
@@ -345,13 +412,13 @@ function normalizeTrackQuery_(rawQuery) {
     cleanedQuery = cleanedQuery.replace(new RegExp(`\\b${word}\\b`, 'gi'), '');
   });
   cleanedQuery = cleanedQuery.replace(/^the\s+/, '');
-  cleanedQuery = cleanedQuery.replace(/[^a-z0-9\s]/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  cleanedQuery = cleanedQuery.replace(/[^a-z0-9\s-]/g, ' ').replace(/\s{2,}/g, ' ').trim();
 
   return cleanedQuery;
 }
 
 /**
- * [IMPROVED] Parses the raw string response from Gemini, cleaning up common formatting errors.
+ * Parses the raw string response from Gemini, cleaning up common formatting errors.
  * @param {string} rawResponse - The raw string from the AI.
  * @return {Array<string>} An array of tracks to search for.
  */
@@ -393,8 +460,7 @@ function callGeminiApi_(apiKey, model, prompt) {
      "contents": [{"parts": [{"text": prompt}]}],
      "generationConfig": {
        "temperature": 1.2,
-       "responseMimeType": "application/json",
-       "responseSchema": {"type": "array", "items": { "type": "string" }}
+       "responseMimeType": "application/json"
      },
      "safetySettings": [
         { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
@@ -403,6 +469,11 @@ function callGeminiApi_(apiKey, model, prompt) {
         { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
       ]
    };
+  // Add responseSchema only if the model supports it
+  if (model.includes('1.5')) {
+      requestPayload.generationConfig.responseSchema = {"type": "array", "items": { "type": "string" }};
+  }
+  
   const options = { 'method': 'post', 'contentType': 'application/json', 'payload': JSON.stringify(requestPayload), 'muteHttpExceptions': true };
 
   try {
@@ -427,36 +498,60 @@ function callGeminiApi_(apiKey, model, prompt) {
   }
 }
 
-function callGeminiImageGenerationApi_(imagePrompt) {
-  const apiKey = getGeminiApiKey_();
-  const model = 'gemini-2.0-flash-preview-image-generation';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${apiKey}`;
-  const requestPayload = {
-    "contents": [{"parts": [{ "text": `Generate a single, high-quality, photorealistic square album cover based strictly on the following creative description: ${imagePrompt}` }]}],
-    "generationConfig": { "responseModalities": ["IMAGE", "TEXT"] }
+/**
+ * Calls the Hugging Face Inference API.
+ * @param {string} imagePrompt - The text prompt for image generation.
+ * @return {string | null} A Base64 encoded image or null on error.
+ */
+function callHuggingFaceApi_(imagePrompt) {
+  const apiKey = PropertiesService.getScriptProperties().getProperty('HUGGINGFACE_API_KEY');
+  if (!apiKey) {
+    Logger.log('Error: Hugging Face API key (HUGGINGFACE_API_KEY) not found.');
+    return null;
+  }
+  
+  const modelId = AI_CONFIG.IMAGE_GENERATION.SELECTED_MODEL_ID;
+  const url = `https://api-inference.huggingface.co/models/${modelId}`;
+  
+  let payload = { "inputs": imagePrompt };
+  
+  // Special parameters for fast models
+  if (modelId.includes('FLUX.1-schnell') || modelId.includes('sdxl-turbo')) {
+    payload.parameters = {
+      "num_inference_steps": 8,
+      "guidance_scale": 0.0
+    };
+  }
+
+  const options = {
+    'method': 'post',
+    'headers': {
+      'Authorization': 'Bearer ' + apiKey,
+      'Content-Type': 'application/json'
+    },
+    'payload': JSON.stringify(payload),
+    'muteHttpExceptions': true
   };
-  const options = { 'method': 'post', 'contentType': 'application/json', 'payload': JSON.stringify(requestPayload), 'muteHttpExceptions': true };
 
   try {
+    Logger.log(`Hugging Face: Sending generation request to model "${modelId}"...`);
     const response = UrlFetchApp.fetch(url, options);
     const responseCode = response.getResponseCode();
-    const responseBody = response.getContentText();
+
     if (responseCode === 200) {
-      const chunks = JSON.parse(responseBody);
-      for (const chunk of chunks) {
-        if (chunk.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data) {
-          Logger.log('✅ Image data found in the API response.');
-          return chunk.candidates[0].content.parts[0].inlineData.data;
-        }
-      }
-      Logger.log(`API returned 200 but no image data was found. Response: ${responseBody}`);
-      return null;
+      Logger.log(`✅ Image successfully generated via "${modelId}".`);
+      const imageBlob = response.getBlob();
+      return Utilities.base64Encode(imageBlob.getBytes());
     } else {
-      Logger.log(`Error calling Image API. Code: ${responseCode}. Response: ${responseBody}`);
+      const responseBody = response.getContentText();
+      Logger.log(`Error calling Hugging Face API. Code: ${responseCode}. Body: ${responseBody}`);
+      if (responseCode === 503) {
+          Logger.log('The model on Hugging Face is currently loading. This can take a few minutes. The run should succeed next time.');
+      }
       return null;
     }
   } catch (error) {
-    Logger.log(`Exception during Image API call: ${error}`);
+    Logger.log(`Exception during Hugging Face API call: ${error}`);
     return null;
   }
 }
@@ -466,36 +561,46 @@ function callGeminiImageGenerationApi_(imagePrompt) {
 // ===============================================================
 
 /**
- * This function can be run on a schedule (e.g., hourly) to remove tracks from the
- * target playlist that you have recently listened to.
+ * [IMPROVED VERSION] This function can be run on a schedule (e.g., hourly) to remove
+ * tracks from the target playlist that you have recently listened to.
  */
 function cleanUpPlaylist() {
   const playlistIdToClean = AI_CONFIG.SPOTIFY_PLAYLIST_ID;
   Logger.log(`Cleanup Task: Starting for playlist ID: ${playlistIdToClean}`);
 
   try {
-    let currentPlaylistTracks = Source.getPlaylistTracks('', playlistIdToClean);
+    const currentPlaylistTracks = Source.getPlaylistTracks('', playlistIdToClean);
     if (!currentPlaylistTracks || currentPlaylistTracks.length === 0) {
       Logger.log(`Cleanup Task: Playlist is empty. Finishing.`);
       return;
     }
     const initialTrackCount = currentPlaylistTracks.length;
+    Logger.log(`Found ${initialTrackCount} tracks in playlist to check.`);
 
     Logger.log(`Cleanup Task: Getting listening history for the last ${AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS} days...`);
     let recentTracksHistory = RecentTracks.get();
     Filter.rangeDateRel(recentTracksHistory, AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS, 0);
     
-    Filter.removeTracks(currentPlaylistTracks, recentTracksHistory);
-    const finalTrackCount = currentPlaylistTracks.length;
+    if (!recentTracksHistory || recentTracksHistory.length === 0) {
+        Logger.log(`Cleanup Task: No listened tracks found in the specified period. No changes needed.`);
+        return;
+    }
+    Logger.log(`Found ${recentTracksHistory.length} listened tracks for comparison.`);
 
-    if (finalTrackCount < initialTrackCount) {
-      Logger.log(`Cleanup Task: ${initialTrackCount - finalTrackCount} tracks will be removed. Updating playlist...`);
-      Playlist.saveWithReplace({ id: playlistIdToClean, tracks: currentPlaylistTracks });
+    // Use a Set for fast and reliable comparison of track IDs
+    const recentTrackIds = new Set(recentTracksHistory.map(track => track.id));
+    const tracksToKeep = currentPlaylistTracks.filter(track => !recentTrackIds.has(track.id));
+    
+    const tracksToRemoveCount = initialTrackCount - tracksToKeep.length;
+
+    if (tracksToRemoveCount > 0) {
+      Logger.log(`Cleanup Task: ${tracksToRemoveCount} listened tracks will be removed. ${tracksToKeep.length} tracks will remain. Updating playlist...`);
+      Playlist.saveWithReplace({ id: playlistIdToClean, tracks: tracksToKeep });
       Logger.log(`Cleanup Task: Playlist was successfully updated.`);
     } else {
-      Logger.log(`Cleanup Task: No listened tracks found in the playlist. No changes made.`);
+      Logger.log(`Cleanup Task: No matches found. All tracks in the playlist remain. No changes needed.`);
     }
   } catch (error) {
-    Logger.log(`Cleanup Task ERROR: ${error}`);
+    Logger.log(`Cleanup Task ERROR: ${error.toString()}\nStack: ${error.stack}`);
   }
 }
