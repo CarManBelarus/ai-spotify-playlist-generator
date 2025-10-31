@@ -1,6 +1,6 @@
 # AI Spotify Playlist Generator
 
-A Google Apps Script project that uses Google's Gemini AI to automatically generate personalized Spotify playlists and create unique, AI-generated cover art for them.
+A Google Apps Script project that uses Google's Gemini AI to automatically generate personalized Spotify playlists and create unique, AI-generated cover art for them using Hugging Face.
 
 This script analyzes your existing music library from the Goofy library's cache, finds new track recommendations tailored to your taste, and designs a custom cover image that visually represents the playlist's mood.
 
@@ -8,10 +8,10 @@ This script analyzes your existing music library from the Goofy library's cache,
 
 -   **AI-Powered Recommendations:** Uses the Gemini AI model to analyze a sample of your music library and generate a list of new track recommendations.
 -   **No Manual Export Needed:** Reads your "Liked Songs" directly from the cache file (`SavedTracks.json`) automatically maintained by the Goofy library.
--   **Custom Cover Art Generation:** Automatically generates a unique, atmospheric cover image for each playlist update using Gemini's image generation capabilities.
--   **Smart Playlist Management:** Incrementally updates a target playlist, adding new unique tracks and removing the oldest ones if the playlist exceeds a specified size limit.
+-   **Hugging Face Cover Art:** Automatically generates a unique, atmospheric cover image for each playlist update using powerful text-to-image models (e.g., Juggernaut XL, Stable Diffusion 3).
+-   **Smart Playlist Management:** Reliably updates a target playlist by adding new tracks to the top (preserving the "date added" of old tracks) and then trimming the oldest ones if the playlist exceeds a specified size limit.
 -   **Automated Cleanup:** Includes a separate function to remove tracks you've recently listened to, keeping the playlist fresh.
--   **Highly Customizable:** All key parameters are configured at the top of the script file.
+-   **Highly Customizable:** All key parameters, including the cover art generation model, are configured at the top of the script file.
 
 ---
 
@@ -23,6 +23,7 @@ This guide will walk you through setting up the project from scratch.
 
 -   A Google Account (for Google Apps Script).
 -   A Spotify Account (Premium is recommended for full API access).
+-   A Hugging Face Account (free, for cover art generation).
 
 ---
 
@@ -43,7 +44,7 @@ This project is an add-on for the powerful `goofy` library. Setting it up correc
 
 ---
 
-### Part 2: Gathering Your ID and API Key
+### Part 2: Gathering Your IDs and API Keys
 
 Now, let's collect the credentials needed for our AI script.
 
@@ -60,13 +61,24 @@ This is the ID of the playlist you want the script to manage. You can use an exi
 
 #### B. Google Gemini API Key (`GEMINI_API_KEY`)
 
-This is your personal key to access the Gemini AI model.
+This is your personal key to access the Gemini AI model for music analysis.
 
 1.  Go to the **[Google AI Studio](https://aistudio.google.com/)**.
 2.  Sign in with your Google Account.
 3.  On the left panel, click **"Get API key"**.
 4.  Click the **"Create API key in new project"** button.
-5.  A new API key will be generated for you. **Copy this long string of characters** and save it somewhere safe. Treat this key like a password!
+5.  A new API key will be generated for you. **Copy this long string of characters** and save it somewhere safe.
+
+#### C. Hugging Face API Key (`HUGGINGFACE_API_KEY`)
+
+This is your access key for the Hugging Face service to generate cover art.
+
+1.  Go to the **[Hugging Face](https://huggingface.co/)** website and sign up or log in.
+2.  Click your profile picture in the top-right corner and select **Settings**.
+3.  On the left panel, go to the **Access Tokens** section.
+4.  Click the **New token** button.
+5.  Give the token a name (e.g., `gas-spotify-covers`) and select the **read** `Role`.
+6.  Click **Generate a token**. **Copy this token** (it will start with `hf_...`).
 
 ---
 
@@ -81,7 +93,7 @@ Now we will add our AI-powered logic to your Goofy project.
 
 2.  **Add the AI Script Code:**
     *   Open the `AI_Playlist.gs` file you just created.
-    *   Copy the entire code from the `AI_Playlist.gs` file located in the `EN/` folder of this repository and paste it into your new file.
+    *   Copy the entire code from the `AI_Playlist.gs` file in this repository and paste it into your new file.
 
 3.  **Configure the AI Script:**
     *   In the `AI_Playlist.gs` file you just added, find the `AI_CONFIG` block at the very top.
@@ -92,22 +104,28 @@ Now we will add our AI-powered logic to your Goofy project.
           // ... other settings ...
         };
         ```
-    *   Review the other settings in `AI_CONFIG` and adjust them if needed.
+    *   Review the other settings in `AI_CONFIG` (like `SELECTED_MODEL_ID` for the cover art) and adjust them if needed.
     *   **Save the file** (<kbd>Ctrl</kbd>+<kbd>S</kbd>).
 
 ---
 
 ### Part 4: Final Configuration (Script Properties & Fine-Tuning)
 
-#### A. Add your Gemini API Key
+#### A. Add Your API Keys
 
 1.  In the Apps Script editor, click on **Project Settings** (gear icon ⚙️) on the left sidebar.
 2.  Scroll down to the **"Script Properties"** section.
-3.  Click **"Add script property"**.
-4.  Enter the following:
-    *   **Property:** `GEMINI_API_KEY`
-    *   **Value:** Paste your Gemini API Key that you copied in Part 2.
-5.  Click **"Save script properties"**.
+3.  Click **"Edit script properties"**, then click **"Add script property"** twice to add two keys:
+
+    *   **Key 1 (Gemini):**
+        *   **Property:** `GEMINI_API_KEY`
+        *   **Value:** Paste your Gemini API Key that you copied earlier.
+
+    *   **Key 2 (Hugging Face):**
+        *   **Property:** `HUGGINGFACE_API_KEY`
+        *   **Value:** Paste your Hugging Face Access Token (`hf_...`).
+
+4.  Click **"Save script properties"**.
 
 #### B. Fine-Tune Search Accuracy (Highly Recommended)
 
