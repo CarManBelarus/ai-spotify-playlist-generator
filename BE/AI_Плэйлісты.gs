@@ -35,6 +35,26 @@ const AI_CONFIG = {
 
   // Шаблон для назвы плэйліста. {date} будзе заменена на бягучую дату.
   PLAYLIST_NAME_TEMPLATE: 'AI Плэйліст ад {date}',
+  // === НАЛАДЫ ГЕНЕРАЦЫІ ВОКЛАДКІ (ПРАЗ HUGGING FACE) ===
+
+  IMAGE_GENERATION: {
+    // Уключыць ці выключыць генерацыю вокладак (true/false)
+    ENABLED: true,
+    
+    // Выбар мадэлі для генерацыі. Проста скапіруйце ID з аднаго з варыянтаў ніжэй.
+    // Рэкамендацыя: 'PHOTO_REALISTIC' дае самыя якасныя вынікі.
+    SELECTED_MODEL_ID: 'playgroundai/playground-v2.5-1024px-aesthetic',
+
+    // Даступныя мадэлі (можна дадаваць свае, знойдзеныя на Hugging Face)
+    AVAILABLE_MODELS: {
+      DEFAULT: 'stabilityai/stable-diffusion-xl-base-1.0', 
+      PHOTO_REALISTIC: 'playgroundai/playground-v2.5-1024px-aesthetic', 
+      TURBO: 'stabilityai/sdxl-turbo',
+      ARTISTIC: 'openskyml/dreamshaper-xl-1-0', 
+      ANIME: 'cagliostrolab/animagine-xl-3.0',
+      FLUX: 'black-forest-labs/FLUX.1-schnell'
+    }
+  },
 
   // === НАЛАДЫ АЧЫСТКІ ПЛЭЙЛІСТА (для апцыянальнай функцыі cleanUpPlaylist) ===
 
@@ -246,17 +266,29 @@ ${tracksJsonString}
 //                     ГЕНЕРАЦЫЯ ВОКЛАДКІ
 // ===============================================================
 
-function generatePlaylistCover_(tracks) {
+function generatePlaylistCover_() {
+  // Правяраем, ці ўключана генерацыя вокладак у наладах
+  if (!AI_CONFIG.IMAGE_GENERATION.ENABLED) {
+    Logger.log('Генерацыя вокладкі выключана ў наладах.');
+    return null;
+  }
+
   try {
-    const imagePrompt = createImagePromptFromTracks_(tracks);
+    const tracksForPrompt = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
+    if (!tracksForPrompt || tracksForPrompt.length === 0) {
+      Logger.log('Плэйліст пусты, генерацыя вокладкі прапушчана.');
+      return null;
+    }
+
+    const imagePrompt = createImagePromptFromTracks_(tracksForPrompt);
     if (!imagePrompt) {
       Logger.log('Не атрымалася стварыць промпт для малюнка.');
       return null;
     }
-    Logger.log(`Згенераваны промпт для малюнка: "${imagePrompt}"`);
-    return callGeminiImageGenerationApi_(imagePrompt);
+    
+    return callHuggingFaceApi_(imagePrompt);
   } catch (error) {
-    Logger.log(`Памылка падчас генерацыі вокладкі: ${error}`);
+    Logger.log(`⚠️ Падчас генерацыі вокладкі адбылася памылка: ${error.toString()}`);
     return null;
   }
 }
@@ -428,36 +460,67 @@ function callGeminiApi_(apiKey, model, prompt) {
   }
 }
 
-function callGeminiImageGenerationApi_(imagePrompt) {
-  const apiKey = getGeminiApiKey_();
-  const model = 'gemini-2.0-flash-preview-image-generation';
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?key=${apiKey}`;
-  const requestPayload = {
-    "contents": [{"parts": [{ "text": `Generate a single, high-quality, photorealistic square album cover based strictly on the following creative description: ${imagePrompt}` }]}],
-    "generationConfig": { "responseModalities": ["IMAGE", "TEXT"] }
+/**
+ * Выклікае Inference API Hugging Face.
+ * @param {string} imagePrompt - Тэкставы запыт для генерацыі малюнка.
+ * @return {string | null} - Малюнак у фармаце Base64 або null у выпадку памылкі.
+ */
+function callHuggingFaceApi_(imagePrompt) {
+  const apiKey = PropertiesService.getScriptProperties().getProperty('HUGGINGFACE_API_KEY');
+  if (!apiKey) {
+    Logger.log('Памылка: API-ключ для Hugging Face (HUGGINGFACE_API_KEY) не знойдзены.');
+    return null;
+  }
+  
+  // Бярэм ID мадэлі непасрэдна з канфігурацыі
+  const modelId = AI_CONFIG.IMAGE_GENERATION.SELECTED_MODEL_ID;
+  const url = `https://api-inference.huggingface.co/models/${modelId}`;
+  
+  let payload;
+  
+  // Спецыяльныя параметры для хуткай мадэлі FLUX
+  if (modelId.includes('FLUX.1-schnell')) {
+    payload = {
+      "inputs": imagePrompt,
+      "parameters": {
+        "num_inference_steps": 8,
+        "guidance_scale": 0.0
+      }
+    };
+  } else {
+    // Стандартныя параметры для іншых мадэляў
+    payload = { "inputs": imagePrompt };
+  }
+
+  const options = {
+    'method': 'post',
+    'headers': {
+      'Authorization': 'Bearer ' + apiKey,
+      'Content-Type': 'application/json'
+    },
+    'payload': JSON.stringify(payload),
+    'muteHttpExceptions': true
   };
-  const options = { 'method': 'post', 'contentType': 'application/json', 'payload': JSON.stringify(requestPayload), 'muteHttpExceptions': true };
 
   try {
+    Logger.log(`Hugging Face: Адпраўка запыту на генерацыю ў мадэль "${modelId}"...`);
     const response = UrlFetchApp.fetch(url, options);
     const responseCode = response.getResponseCode();
-    const responseBody = response.getContentText();
+
     if (responseCode === 200) {
-      const chunks = JSON.parse(responseBody);
-      for (const chunk of chunks) {
-        if (chunk.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data) {
-          Logger.log('✅ Даныя малюнка знойдзены ў адказе API.');
-          return chunk.candidates[0].content.parts[0].inlineData.data;
-        }
-      }
-      Logger.log(`API вярнуў код 200, але даныя малюнка не знойдзены. Адказ: ${responseBody}`);
-      return null;
+      Logger.log(`✅ Малюнак паспяхова згенераваны праз "${modelId}".`);
+      const imageBlob = response.getBlob();
+      return Utilities.base64Encode(imageBlob.getBytes());
     } else {
-      Logger.log(`Памылка выкліку Image API. Код: ${responseCode}. Адказ: ${responseBody}`);
+      const responseBody = response.getContentText();
+      Logger.log(`Памылка выкліку Hugging Face API. Код: ${responseCode}. Адказ: ${responseBody}`);
+      if (responseCode === 503) {
+          Logger.log('Мадэль на Hugging Face зараз загружаецца. Гэта можа заняць некалькі хвілін. Запуск будзе паспяховым у наступны раз.');
+      }
       return null;
     }
   } catch (error) {
-    Logger.log(`Выключэнне падчас выкліку Image API: ${error}`);
+    Logger.log(`Выключэнне падчас выкліку Hugging Face API: ${error}`);
     return null;
   }
 }
