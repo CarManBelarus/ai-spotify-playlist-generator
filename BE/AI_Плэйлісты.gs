@@ -1,9 +1,9 @@
 /**
  * @OnlyCurrentDoc
- * Галоўны файл для працы з Gemini AI для стварэння плэйлістоў Spotify.
+ * Галоўny файл для працы з Gemini AI для стварэння плэйлістоў Spotify.
  * Гэты скрыпт аналізуе вашу бібліятэку, атрымлівае рэкамендацыі ад AI і генеруе карыстальніцкія вокладкі.
  *
- * Версія: 2.0 (Незалежнасць ад мадыфікацый бібліятэкі, палепшаная дакладнасць пошуку)
+ * Версія: 3.0 (Надзейнае інкрэментальнае абнаўленне, палепшаная ачыстка, пашыраныя канфігурацыі)
  */
 
 // ===============================================================
@@ -22,8 +22,8 @@ const AI_CONFIG = {
   // === НАЛАДЫ AI І ПЛЭЙЛІСТА ===
 
   // Мадэль Gemini, якая будзе выкарыстоўвацца для генерацыі рэкамендацый.
-  // 'gemini-2.5-pro' — магутная; 'gemini-2.5-flash' — больш хуткая.
-  GEMINI_MODEL: 'gemini-2.5-pro',
+  // 'gemini-1.5-pro-latest' — магутная; 'gemini-1.5-flash-latest' — больш хуткая.
+  GEMINI_MODEL: 'gemini-1.5-pro-latest',
 
   // Колькасць выпадковых трэкаў з вашай бібліятэкі для аналізу AI.
   // Большая выбарка дае AI лепшае разуменне вашых густаў. 700 — добры баланс.
@@ -35,6 +35,7 @@ const AI_CONFIG = {
 
   // Шаблон для назвы плэйліста. {date} будзе заменена на бягучую дату.
   PLAYLIST_NAME_TEMPLATE: 'AI Плэйліст ад {date}',
+
   // === НАЛАДЫ ГЕНЕРАЦЫІ ВОКЛАДКІ (ПРАЗ HUGGING FACE) ===
 
   IMAGE_GENERATION: {
@@ -42,17 +43,22 @@ const AI_CONFIG = {
     ENABLED: true,
     
     // Выбар мадэлі для генерацыі. Проста скапіруйце ID з аднаго з варыянтаў ніжэй.
-    // Рэкамендацыя: 'PHOTO_REALISTIC' дае самыя якасныя вынікі.
-    SELECTED_MODEL_ID: 'playgroundai/playground-v2.5-1024px-aesthetic',
+    // Рэкамендацыя: JUGGERNAUT_XL або PHOTO_REALISTIC даюць выдатныя вынікі.
+    SELECTED_MODEL_ID: 'black-forest-labs/FLUX.1-schnell',
 
     // Даступныя мадэлі (можна дадаваць свае, знойдзеныя на Hugging Face)
     AVAILABLE_MODELS: {
-      DEFAULT: 'stabilityai/stable-diffusion-xl-base-1.0', 
-      PHOTO_REALISTIC: 'playgroundai/playground-v2.5-1024px-aesthetic', 
-      TURBO: 'stabilityai/sdxl-turbo',
-      ARTISTIC: 'openskyml/dreamshaper-xl-1-0', 
-      ANIME: 'cagliostrolab/animagine-xl-3.0',
-      FLUX: 'black-forest-labs/FLUX.1-schnell'
+      // --- РЭКАМЕНДАЦЫІ ---
+      JUGGERNAUT_XL: 'RunDiffusion/Juggernaut-XL-v9', // Вельмі папулярная мадэль для кінематаграфічнага фотарэалізму.
+      SD_3_MEDIUM: 'stabilityai/stable-diffusion-3-medium-diffusers', // Stable Diffusion 3: найноўшая, вельмі дакладная мадэль.
+      PHOTO_REALISTIC: 'playgroundai/playground-v2.5-1024px-aesthetic', // Выдатная эстэтычная мадэль.
+      FLUX: 'black-forest-labs/FLUX.1-schnell', // Вельмі хуткая і якасная мадэль.
+
+      // --- ІНШЫЯ СТЫЛІ ---
+      ARTISTIC: 'openskyml/dreamshaper-xl-1-0', // Лепшая для мастацкага, "карціннага" стылю.
+      ANIME: 'cagliostrolab/animagine-xl-3.0', // Лепшая для стылю анімэ.
+      TURBO: 'stabilityai/sdxl-turbo', // Вельмі хуткая версія SDXL для тэстаў.
+      DEFAULT_SDXL: 'stabilityai/stable-diffusion-xl-base-1.0' // Стандартны Stable Diffusion XL.
     }
   },
 
@@ -96,7 +102,6 @@ function generateAndCreateSpotifyPlaylist() {
       return;
     }
 
-    // <<< --- НОВЫ КРОК НАРМАЛІЗАЦЫІ --- >>>
     Logger.log('Нармалізацыя запытаў перад адпраўкай у Spotify...');
     const normalizedTracksToSearch = tracksToSearch.map(track => normalizeTrackQuery_(track));
 
@@ -109,7 +114,7 @@ function generateAndCreateSpotifyPlaylist() {
       return;
     }
 
-    updatePlaylistIncrementally_(foundSpotifyTracks);
+    updatePlaylistAndCover_(foundSpotifyTracks);
 
     Logger.log('Працэс стварэння/абнаўлення плэйліста паспяхова завершаны.');
 
@@ -124,77 +129,82 @@ function generateAndCreateSpotifyPlaylist() {
 // ===============================================================
 
 /**
- * Інкрэментальна абнаўляе плэйліст: дадае новыя трэкі, абразае старыя і ўсталёўвае новую вокладку.
+ * [НОВАЯ ВЕРСІЯ] Комплексна абнаўляе плэйліст: папарцыйна дадае новыя трэкі,
+ * абразае старыя да ліміту і абнаўляе метаданыя (назву, апісанне, вокладку).
  * @param {Array<Object>} foundSpotifyTracks Масіў трэкаў, рэкамендаваных AI.
  */
-function updatePlaylistIncrementally_(foundSpotifyTracks) {
+function updatePlaylistAndCover_(foundSpotifyTracks) {
   Logger.log(`Атрыманне існуючых трэкаў з плэйліста ID: ${AI_CONFIG.SPOTIFY_PLAYLIST_ID}...`);
   const existingPlaylistTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
   
   let newUniqueTracks = Selector.sliceCopy(foundSpotifyTracks);
   Filter.removeTracks(newUniqueTracks, existingPlaylistTracks);
-  Logger.log(`Знойдзена ${newUniqueTracks.length} новых, унікальных трэкаў для дадавання.`);
+  const newTracksCount = newUniqueTracks.length;
+  Logger.log(`Знойдзена ${newTracksCount} новых, унікальных трэкаў для дадавання.`);
 
-  if (newUniqueTracks.length === 0) {
-    Logger.log('Няма новых трэкаў для дадавання. Плэйліст застаецца без змен.');
-    return;
-  }
-
-  let finalTrackList = [];
-  Combiner.push(finalTrackList, newUniqueTracks, existingPlaylistTracks);
-  Logger.log(`Агульная колькасць трэкаў пасля аб'яднання: ${finalTrackList.length}.`);
-
-  if (finalTrackList.length > AI_CONFIG.MAX_PLAYLIST_SIZE) {
-    const tracksToRemoveCount = finalTrackList.length - AI_CONFIG.MAX_PLAYLIST_SIZE;
-    Logger.log(`Плэйліст перавышае ліміт у ${AI_CONFIG.MAX_PLAYLIST_SIZE} трэкаў. Выдаленне ${tracksToRemoveCount} самых старых...`);
-    finalTrackList.length = AI_CONFIG.MAX_PLAYLIST_SIZE; // Проста абразаем масіў
-  }
-
-  Logger.log('Спроба згенераваць і апрацаваць новую вокладку...');
-  let coverImageBase64 = null;
-  let tempFile = null;
-
-  try {
-    const originalImageBase64 = generatePlaylistCover_(finalTrackList);
-    if (originalImageBase64) {
-      const imageBlob = Utilities.newBlob(Utilities.base64Decode(originalImageBase64), 'image/jpeg', 'temp_cover.jpg');
-      tempFile = DriveApp.createFile(imageBlob);
-      tempFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-      const imageUrlForResize = `https://drive.google.com/uc?id=${tempFile.getId()}`;
-      
-      Logger.log(`Спроба паменшыць малюнак праз weserv.nl...`);
-      const resizeServiceUrl = `https://images.weserv.nl/?url=${encodeURIComponent(imageUrlForResize)}&w=600&h=600&q=90&output=jpg`;
-      const resizedResponse = UrlFetchApp.fetch(resizeServiceUrl, { 'muteHttpExceptions': true });
-      
-      if (resizedResponse.getResponseCode() === 200) {
-        coverImageBase64 = Utilities.base64Encode(resizedResponse.getBlob().getBytes());
-        Logger.log(`✅ Малюнак паспяхова паменшаны.`);
-      } else {
-        Logger.log(`⚠️ Сэрвіс змены памеру малюнка не спрацаваў (Код: ${resizedResponse.getResponseCode()}). Абнаўленне вокладкі прапушчана.`);
+  // --- ЭТАП 1: Даданне новых трэкаў (калі яны ёсць) ---
+  if (newTracksCount > 0) {
+    Logger.log(`Пачатак папарцыйнага дадання ${newTracksCount} трэкаў...`);
+    const CHUNK_SIZE = 100; // Ліміт Spotify API
+    for (let i = 0; i < newTracksCount; i += CHUNK_SIZE) {
+      const chunk = newUniqueTracks.slice(i, i + CHUNK_SIZE);
+      Logger.log(`Даданне часткі з ${chunk.length} трэкаў...`);
+      try {
+        Playlist.saveWithAppend({
+          id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
+          tracks: chunk,
+          position: 'begin' // Дадаем новыя трэкі ў пачатак
+        });
+        if (newTracksCount > CHUNK_SIZE) Utilities.sleep(1000); // Паўза паміж запытамі
+      } catch (e) {
+        Logger.log(`ПАМЫЛКА падчас дадання часткі трэкаў: ${e.toString()}`);
       }
     }
-  } catch (e) {
-    Logger.log(`⚠️ Падчас апрацоўкі вокладкі адбылася памылка: ${e}.`);
-  } finally {
-    if (tempFile) {
-      try { tempFile.setTrashed(true); Logger.log('Часовы файл вокладкі выдалены.'); }
-      catch (e) { Logger.log(`Не атрымалася выдаліць часовы файл: ${e}`); }
-    }
+    Logger.log('Папарцыйнае даданне трэкаў завершана.');
   }
 
+  // --- ЭТАП 2: Абразанне плэйліста да ліміту (калі трэба) ---
+  const currentTracksAfterAdd = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
+  if (currentTracksAfterAdd.length > AI_CONFIG.MAX_PLAYLIST_SIZE) {
+    const tracksToRemoveCount = currentTracksAfterAdd.length - AI_CONFIG.MAX_PLAYLIST_SIZE;
+    Logger.log(`Плэйліст перавышае ліміт (${AI_CONFIG.MAX_PLAYLIST_SIZE}). Выдаленне ${tracksToRemoveCount} самых старых трэкаў...`);
+    const trimmedTracks = currentTracksAfterAdd.slice(0, AI_CONFIG.MAX_PLAYLIST_SIZE);
+    Playlist.saveWithReplace({
+      id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
+      tracks: trimmedTracks
+    });
+    Logger.log('Плэйліст паспяхова абрэзаны.');
+  }
+
+  // --- ЭТАП 3: Абнаўленне назвы, апісання і вокладкі ---
+  const finalTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
+  
   const playlistName = AI_CONFIG.PLAYLIST_NAME_TEMPLATE.replace('{date}', new Date().toLocaleDateString('be-BY'));
   const formattedDateTime = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd MMMM yyyy, HH:mm');
 
-  const playlistData = {
-    id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
+  const payload = {
     name: playlistName,
-    tracks: finalTrackList,
-    description: `Апошняе абнаўленне: ${formattedDateTime}. Дададзена: ${newUniqueTracks.length} новых. Агулам: ${finalTrackList.length}.`,
-    coverImage: coverImageBase64
+    description: `Апошняе абнаўленне: ${formattedDateTime}. Дададзена: ${newTracksCount} новых. Агулам: ${finalTracks.length}.`
   };
 
-  Logger.log(`Захаванне ${finalTrackList.length} трэкаў ${coverImageBase64 ? 'і новай вокладкі' : ''} ў плэйліст "${playlistName}"...`);
-  savePlaylistWithBase64Cover_(playlistData);
+  Logger.log(`Абнаўленне назвы і апісання плэйліста...`);
+  try {
+    SpotifyRequest.put(`${API_BASE_URL}/playlists/${AI_CONFIG.SPOTIFY_PLAYLIST_ID}`, payload);
+    Logger.log('✅ Назва і апісанне паспяхова абноўлены.');
+  } catch (e) {
+    Logger.log(`⚠️ Памылка падчас абнаўлення дэталяў плэйліста: ${e.toString()}`);
+  }
+
+  Logger.log('Спроба згенераваць і загрузіць новую вокладку...');
+  const coverImageBase64 = generatePlaylistCover_(finalTracks);
+  if (coverImageBase64) {
+    try {
+      SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${AI_CONFIG.SPOTIFY_PLAYLIST_ID}/images`, coverImageBase64);
+      Logger.log('✅ Вокладка паспяхова загружана.');
+    } catch (e) {
+      Logger.log(`⚠️ Памылка падчас загрузкі вокладкі: ${e.toString()}`);
+    }
+  }
 }
 
 // ===============================================================
@@ -239,6 +249,7 @@ ${tracksJsonString}
 - **Разнастайнасць:**
     - ~70% рэкамендацый павінны дакладна адпавядаць вызначаным густам.
     - ~30% павінны быць смелым "крокам убок": эксперыментуй з менш відавочнымі сумежнымі жанрамі (напр., калі ёсць пост-панк, прапануй coldwave або minimal synth), іншымі эпохамі (70-я, 2020-я) або геаграфіяй (напр., японская альтэрнатыўная сцэна).
+- **Жанравая класіка:** Абавязкова ўключы ў выніковы спіс ~5 знакавых шлягераў з дамінуючага жанру, вызначанага з уваходных даных.
 - **Лакальная сцэна:** Каля 30% выканаўцаў у фінальным спісе павінны быць з Беларусі.
 - **Моўны фільтр:** Пазбягай песень на рускай мове, і **НІКОЛІ** не дадавай рускамоўных песень расейскіх выканаўцаў.
 - **Напісанне назваў:** Для беларускіх гуртоў выкарыстоўвай найбольш распаўсюджанае ў публічнай прасторы напісанне іх назвы (кірыліца ці лацінка).
@@ -266,33 +277,46 @@ ${tracksJsonString}
 //                     ГЕНЕРАЦЫЯ ВОКЛАДКІ
 // ===============================================================
 
-function generatePlaylistCover_() {
-  // Правяраем, ці ўключана генерацыя вокладак у наладах
+/**
+ * Асноўная функцыя для генерацыі вокладкі плэйліста.
+ * @param {Array<Object>} tracksForAnalysis Масіў трэкаў для аналізу настрою.
+ * @return {string | null} Малюнак у фармаце Base64 або null.
+ */
+function generatePlaylistCover_(tracksForAnalysis) {
   if (!AI_CONFIG.IMAGE_GENERATION.ENABLED) {
     Logger.log('Генерацыя вокладкі выключана ў наладах.');
     return null;
   }
 
-  try {
-    const tracksForPrompt = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
-    if (!tracksForPrompt || tracksForPrompt.length === 0) {
-      Logger.log('Плэйліст пусты, генерацыя вокладкі прапушчана.');
-      return null;
-    }
+  if (!tracksForAnalysis || tracksForAnalysis.length === 0) {
+    Logger.log('Плэйліст пусты, генерацыя вокладкі прапушчана.');
+    return null;
+  }
 
-    const imagePrompt = createImagePromptFromTracks_(tracksForPrompt);
+  try {
+    const imagePrompt = createImagePromptFromTracks_(tracksForAnalysis);
     if (!imagePrompt) {
       Logger.log('Не атрымалася стварыць промпт для малюнка.');
       return null;
     }
     
-    return callHuggingFaceApi_(imagePrompt);
+    const originalImageBase64 = callHuggingFaceApi_(imagePrompt);
+    if (!originalImageBase64) return null;
+    
+    // Спрабуем паменшыць малюнак для больш хуткай загрузкі ў Spotify
+    return resizeImage_(originalImageBase64);
+    
   } catch (error) {
     Logger.log(`⚠️ Падчас генерацыі вокладкі адбылася памылка: ${error.toString()}`);
     return null;
   }
 }
 
+/**
+ * Стварае тэкставы промпт для генератара малюнкаў на аснове спісу трэкаў.
+ * @param {Array<Object>} tracks Масіў трэкаў для аналізу.
+ * @return {string | null} Гатовы промпт або null.
+ */
 function createImagePromptFromTracks_(tracks) {
   const trackSample = Selector.sliceRandom(tracks, 50); 
   const trackListString = trackSample.map(t => `${t.artists[0].name} - ${t.name}`).join('\n');
@@ -316,11 +340,47 @@ Cinematic wide-angle shot of a lone, glowing figure in a rain-slicked, neon-lit 
 
   try {
     const geminiApiKey = getGeminiApiKey_();
-    const imagePromptText = callGeminiApi_(geminiApiKey, 'gemini-2.5-flash', promptForPrompt); 
-    return imagePromptText ? imagePromptText.replace(/`/g, '') : null;
+    // Выкарыстоўваем хуткую мадэль для генерацыі промпта
+    const imagePromptText = callGeminiApi_(geminiApiKey, 'gemini-1.5-flash-latest', promptForPrompt); 
+    return imagePromptText ? imagePromptText.replace(/[`"']/g, '') : null;
   } catch (e) {
     Logger.log(`Не атрымалася стварыць промпт для малюнка: ${e}`);
     return null;
+  }
+}
+
+/**
+ * Памяншае памер малюнка з дапамогай вонкавага сэрвісу weserv.nl.
+ * @param {string} originalBase64 Малюнак у Base64.
+ * @return {string} Паменшаны малюнак у Base64 або арыгінал у выпадку памылкі.
+ */
+function resizeImage_(originalBase64) {
+  let tempFile = null;
+  try {
+    const imageBlob = Utilities.newBlob(Utilities.base64Decode(originalBase64), 'image/jpeg', 'temp_cover.jpg');
+    tempFile = DriveApp.createFile(imageBlob);
+    tempFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    const imageUrlForResize = `https://drive.google.com/uc?id=${tempFile.getId()}`;
+      
+    Logger.log(`Спроба паменшыць малюнак праз weserv.nl...`);
+    const resizeServiceUrl = `https://images.weserv.nl/?url=${encodeURIComponent(imageUrlForResize)}&w=600&h=600&q=90&output=jpg`;
+    const resizedResponse = UrlFetchApp.fetch(resizeServiceUrl, { 'muteHttpExceptions': true });
+      
+    if (resizedResponse.getResponseCode() === 200) {
+      Logger.log(`✅ Малюнак паспяхова паменшаны.`);
+      return Utilities.base64Encode(resizedResponse.getBlob().getBytes());
+    } else {
+      Logger.log(`⚠️ Сэрвіс змены памеру малюнка не спрацаваў (Код: ${resizedResponse.getResponseCode()}). Выкарыстоўваецца арыгінальны малюнак.`);
+      return originalBase64;
+    }
+  } catch (e) {
+    Logger.log(`⚠️ Падчас змены памеру малюнка адбылася памылка: ${e}. Выкарыстоўваецца арыгінальны малюнак.`);
+    return originalBase64;
+  } finally {
+    if (tempFile) {
+      try { tempFile.setTrashed(true); Logger.log('Часовы файл вокладкі выдалены.'); }
+      catch (e) { Logger.log(`Не атрымалася выдаліць часовы файл: ${e}`); }
+    }
   }
 }
 
@@ -329,32 +389,7 @@ Cinematic wide-angle shot of a lone, glowing figure in a rain-slicked, neon-lit 
 // ===============================================================
 
 /**
- * [НОВАЯ - НЕЗАЛЕЖНАЯ] Захоўвае плэйліст, выкарыстоўваючы стандартныя функцыі Goofy,
- * а затым асобна загружае вокладку ў Base64. Гэта дазваляе не змяняць бібліятэку.
- * @param {object} data - Аб'ект з данымі плэйліста (id, name, tracks, description, coverImage).
- */
-function savePlaylistWithBase64Cover_(data) {
-  Logger.log('Выкананне стандартнага захавання трэкаў і метаданых...');
-  Playlist.saveWithReplace({
-    id: data.id,
-    name: data.name,
-    description: data.description,
-    tracks: data.tracks
-  });
-
-  if (data.coverImage) {
-    Logger.log('Знойдзена вокладка ў фармаце Base64. Спроба загрузкі...');
-    try {
-      SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${data.id}/images`, data.coverImage);
-      Logger.log('✅ Вокладка паспяхова загружана.');
-    } catch (e) {
-      Logger.log(`⚠️ Памылка падчас загрузкі вокладкі: ${e.toString()}`);
-    }
-  }
-}
-
-/**
- * [НОВАЯ - НАРМАЛІЗАТАР] Нармалізуе радок з назвай трэка ад AI для максімальнай дакладнасці пошуку.
+ * Нармалізуе радок з назвай трэка ад AI для максімальнай дакладнасці пошуку.
  * Уключае транслітарацыю з кірыліцы ў лацінку.
  * @param {string} rawQuery - Сыры радок ад AI.
  * @return {string} Ачышчаны і транслітараваны радок, гатовы для пошуку.
@@ -378,13 +413,13 @@ function normalizeTrackQuery_(rawQuery) {
     cleanedQuery = cleanedQuery.replace(new RegExp(`\\b${word}\\b`, 'gi'), '');
   });
   cleanedQuery = cleanedQuery.replace(/^the\s+/, '');
-  cleanedQuery = cleanedQuery.replace(/[^a-z0-9\s]/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  cleanedQuery = cleanedQuery.replace(/[^a-z0-9\s-]/g, ' ').replace(/\s{2,}/g, ' ').trim();
 
   return cleanedQuery;
 }
 
 /**
- * [ПАЛЕПШАНАЯ] Апрацоўвае сыры радок адказу ад Gemini, выпраўляючы распаўсюджаныя памылкі фарматавання.
+ * Апрацоўвае сыры радок адказу ад Gemini, выпраўляючы распаўсюджаныя памылкі фарматавання.
  * @param {string} rawResponse - Сыры радок ад AI.
  * @return {Array<string>} Масіў трэкаў для пошуку.
  */
@@ -426,8 +461,7 @@ function callGeminiApi_(apiKey, model, prompt) {
      "contents": [{"parts": [{"text": prompt}]}],
      "generationConfig": {
        "temperature": 1.2,
-       "responseMimeType": "application/json",
-       "responseSchema": {"type": "array", "items": { "type": "string" }}
+       "responseMimeType": "application/json"
      },
      "safetySettings": [
         { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
@@ -436,6 +470,11 @@ function callGeminiApi_(apiKey, model, prompt) {
         { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
       ]
    };
+  // Дадаем responseSchema толькі калі мадэль гэта падтрымлівае
+  if (model.includes('1.5')) {
+      requestPayload.generationConfig.responseSchema = {"type": "array", "items": { "type": "string" }};
+  }
+  
   const options = { 'method': 'post', 'contentType': 'application/json', 'payload': JSON.stringify(requestPayload), 'muteHttpExceptions': true };
 
   try {
@@ -472,24 +511,17 @@ function callHuggingFaceApi_(imagePrompt) {
     return null;
   }
   
-  // Бярэм ID мадэлі непасрэдна з канфігурацыі
   const modelId = AI_CONFIG.IMAGE_GENERATION.SELECTED_MODEL_ID;
   const url = `https://api-inference.huggingface.co/models/${modelId}`;
   
-  let payload;
+  let payload = { "inputs": imagePrompt };
   
-  // Спецыяльныя параметры для хуткай мадэлі FLUX
-  if (modelId.includes('FLUX.1-schnell')) {
-    payload = {
-      "inputs": imagePrompt,
-      "parameters": {
-        "num_inference_steps": 8,
-        "guidance_scale": 0.0
-      }
+  // Спецыяльныя параметры для хуткіх мадэляў
+  if (modelId.includes('FLUX.1-schnell') || modelId.includes('sdxl-turbo')) {
+    payload.parameters = {
+      "num_inference_steps": 8,
+      "guidance_scale": 0.0
     };
-  } else {
-    // Стандартныя параметры для іншых мадэляў
-    payload = { "inputs": imagePrompt };
   }
 
   const options = {
@@ -530,36 +562,46 @@ function callHuggingFaceApi_(imagePrompt) {
 // ===============================================================
 
 /**
- * Гэту функцыю можна запускаць па раскладзе (напр., штогадзіны) для выдалення
- * трэкаў з мэтавага плэйліста, якія вы нядаўна праслухалі.
+ * [ПАЛЕПШАНАЯ ВЕРСІЯ] Гэту функцыю можна запускаць па раскладзе (напр., штогадзіны)
+ * для выдалення трэкаў з мэтавага плэйліста, якія вы нядаўна праслухалі.
  */
 function cleanUpPlaylist() {
   const playlistIdToClean = AI_CONFIG.SPOTIFY_PLAYLIST_ID;
   Logger.log(`Задача ачысткі: Пачатак для плэйліста ID: ${playlistIdToClean}`);
 
   try {
-    let currentPlaylistTracks = Source.getPlaylistTracks('', playlistIdToClean);
+    const currentPlaylistTracks = Source.getPlaylistTracks('', playlistIdToClean);
     if (!currentPlaylistTracks || currentPlaylistTracks.length === 0) {
       Logger.log(`Задача ачысткі: Плэйліст пусты. Завяршэнне.`);
       return;
     }
     const initialTrackCount = currentPlaylistTracks.length;
+    Logger.log(`Знойдзена ${initialTrackCount} трэкаў у плэйлісце для праверкі.`);
 
     Logger.log(`Задача ачысткі: Атрыманне гісторыі праслухоўванняў за апошнія ${AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS} дзён...`);
     let recentTracksHistory = RecentTracks.get();
     Filter.rangeDateRel(recentTracksHistory, AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS, 0);
     
-    Filter.removeTracks(currentPlaylistTracks, recentTracksHistory);
-    const finalTrackCount = currentPlaylistTracks.length;
+    if (!recentTracksHistory || recentTracksHistory.length === 0) {
+        Logger.log(`Задача ачысткі: Не знойдзена праслуханых трэкаў за зададзены перыяд. Змены не патрабуюцца.`);
+        return;
+    }
+    Logger.log(`Знойдзена ${recentTracksHistory.length} праслуханых трэкаў для параўнання.`);
 
-    if (finalTrackCount < initialTrackCount) {
-      Logger.log(`Задача ачысткі: ${initialTrackCount - finalTrackCount} трэкаў будзе выдалена. Абнаўленне плэйліста...`);
-      Playlist.saveWithReplace({ id: playlistIdToClean, tracks: currentPlaylistTracks });
+    // Выкарыстоўваем Set для хуткага і надзейнага параўнання па ID трэкаў
+    const recentTrackIds = new Set(recentTracksHistory.map(track => track.id));
+    const tracksToKeep = currentPlaylistTracks.filter(track => !recentTrackIds.has(track.id));
+    
+    const tracksToRemoveCount = initialTrackCount - tracksToKeep.length;
+
+    if (tracksToRemoveCount > 0) {
+      Logger.log(`Задача ачысткі: ${tracksToRemoveCount} праслуханых трэкаў будзе выдалена. Застанецца ${tracksToKeep.length} трэкаў. Абнаўленне плэйліста...`);
+      Playlist.saveWithReplace({ id: playlistIdToClean, tracks: tracksToKeep });
       Logger.log(`Задача ачысткі: Плэйліст паспяхова абноўлены.`);
     } else {
-      Logger.log(`Задача ачысткі: Праслуханыя трэкі не знойдзены ў плэйлісце. Змены не патрабуюцца.`);
+      Logger.log(`Задача ачысткі: Супадзенняў не знойдзена. Усе трэкі ў плэйлісце застаюцца. Змены не патрабуюцца.`);
     }
   } catch (error) {
-    Logger.log(`ПАМЫЛКА задачы ачысткі: ${error}`);
+    Logger.log(`ПАМЫЛКА задачы ачысткі: ${error.toString()}\nСтэк: ${error.stack}`);
   }
 }
