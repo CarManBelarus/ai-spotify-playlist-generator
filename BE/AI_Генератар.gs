@@ -1,80 +1,73 @@
 /**
  * @OnlyCurrentDoc
  * Універсальны генератар плэйлістоў на аснове AI.
- * Можа ствараць плэйлісты па тэкставай тэме або на аснове існуючага плэйліста-ўзору.
- * Можа як ствараць новыя плэйлісты, так і цалкам абнаўляць існуючыя.
- *
- * Версія: 2.1 (Надзейнае стварэнне, інтэлектуальныя назвы)
+ * ВЕРСІЯ: "Golden Release" (Multi-Model Gemini + Бяспечныя плэйсхолдары)
+ * 
+ * Гэты скрыпт дазваляе ствараць новыя плэйлісты "з нуля" па тэме 
+ * або на аснове іншага плэйліста-ўзору.
  */
 
 // ===============================================================
-//                           КАНФІГУРАЦЫЯ ГЕНЕРАТАРА
+//                           КАНФІГУРАЦЫЯ
 // ===============================================================
 
 const GENERATOR_CONFIG = {
   // === АСНОЎНЫЯ НАЛАДЫ РЭЖЫМУ ===
 
   // Рэжым працы:
-  // 'TOPIC'    - Стварыць плэйліст на аснове тэкставага апісання (гл. TOPIC_PROMPT).
-  // 'PLAYLIST' - Стварыць плэйліст на аснове аналізу іншага плэйліста (гл. SOURCE_PLAYLIST_ID).
-  MODE: 'TOPIC', // <<<=== АБЯРЫЦЕ РЭЖЫМ: 'TOPIC' або 'PLAYLIST'
+  // 'TOPIC'    - Стварыць плэйліст па апісанні (TOPIC_PROMPT).
+  // 'PLAYLIST' - Стварыць плэйліст на аснове іншага (SOURCE_PLAYLIST_ID).
+  MODE: 'TOPIC', 
 
-  // Дзеянне на выхадзе:
-  // 'CREATE_NEW'      - Стварыць цалкам новы плэйліст.
-  // 'UPDATE_EXISTING' - Цалкам перазапісаць існуючы плэйліст (гл. TARGET_PLAYLIST_ID).
-  ACTION: 'CREATE_NEW', // <<<=== АБЯРЫЦЕ ДЗЕЯННЕ: 'CREATE_NEW' або 'UPDATE_EXISTING'
+  // Дзеянне:
+  // 'CREATE_NEW'      - Стварыць новы плэйліст.
+  // 'UPDATE_EXISTING' - Перазапісаць існуючы (TARGET_PLAYLIST_ID).
+  ACTION: 'CREATE_NEW', 
 
   // === НАЛАДЫ ДЛЯ РЭЖЫМУ 'TOPIC' ===
-
-  // Апішыце тэму, настрой, жанры для вашага будучага плэйліста.
-  TOPIC_PROMPT: 'Мнагажанравы лёгкі плейліст у доўгую дарогу',
+  TOPIC_PROMPT: 'Мнагажанравы цалкам беларускамоўны лёгкі плейліст у доўгую дарогу',
   
   // === НАЛАДЫ ДЛЯ РЭЖЫМУ 'PLAYLIST' ===
-
-  // ID плэйліста-ўзору для аналізу.
-  SOURCE_PLAYLIST_ID: 'YOUR_SOURCE_PLAYLIST_ID_HERE',
-
-  // Колькасць выпадковых трэкаў з плэйліста-ўзору для аналізу AI.
-  TRACK_SAMPLE_SIZE_FOR_AI: 400,
+  SOURCE_PLAYLIST_ID: 'INSERT_SOURCE_PLAYLIST_ID_HERE', // Узор для аналізу
+  TRACK_SAMPLE_SIZE_FOR_AI: 400, // Колькасць трэкаў для аналізу
 
   // === НАЛАДЫ ДЛЯ ВЫНІКУ ===
+  // ID плэйліста, які будзе перазапісаны (толькі для UPDATE_EXISTING)
+  TARGET_PLAYLIST_ID: 'INSERT_TARGET_PLAYLIST_ID_HERE',
 
-  // ID плэйліста для абнаўлення (калі ACTION = 'UPDATE_EXISTING').
-  TARGET_PLAYLIST_ID: 'YOUR_TARGET_PLAYLIST_ID_HERE',
-
-  // Назва для новага плэйліста, створанага па тэме
+  // Шаблоны назваў для новых плэйлістоў
   NEW_PLAYLIST_NAME_FOR_TOPIC: 'AI Плэйліст: {topic}',
-  // Назва для новага плэйліста, створанага на аснове іншага
   NEW_PLAYLIST_NAME_FOR_PLAYLIST: 'AI Рэкамендацыі: {source_name}',
 
+  // === АГУЛЬНЫЯ НАЛАДЫ AI (MULTI-MODEL) ===
+  // Спіс мадэляў па прыярытэце (Fallback System)
+  GEMINI_MODELS_PRIORITY: [
+    'gemini-2.5-pro',          // 1. Разумная
+    'gemini-flash-latest',     // 2. Хуткая
+    'gemini-flash-lite-latest' // 3. Лёгкая
+  ],
 
-  // === АГУЛЬНЫЯ НАЛАДЫ ===
-  GEMINI_MODEL: 'gemini-2.5-pro',
-  GENERATE_COVER: true, // Ствараць вокладку для плэйліста? (true/false)
-  // Колькасць трэкаў, якую трэба запытаць у AI.
-  NUMBER_OF_TRACKS_TO_REQUEST: 200
+  GENERATE_COVER: true, // Генераваць вокладку?
+  NUMBER_OF_TRACKS_TO_REQUEST: 200 // Колькасць трэкаў у выніку
 };
 
 // ===============================================================
 //                АСНОЎНАЯ ФУНКЦЫЯ ГЕНЕРАТАРА
 // ===============================================================
 
-/**
- * Галоўная функцыя для запуску генератара ў абраным рэжыме.
- */
 function generateCustomPlaylist() {
   try {
     const config = GENERATOR_CONFIG;
-    Logger.log(`Запуск генератара ў рэжыме: ${config.MODE}, Дзеянне: ${config.ACTION}`);
+    Logger.log(`🚀 Запуск генератара ў рэжыме: ${config.MODE}, Дзеянне: ${config.ACTION}`);
     
     const geminiApiKey = getGeminiApiKey_();
     let promptText = '';
-    let sourcePlaylistName = ''; // Для апісанняў і назваў
+    let sourcePlaylistName = ''; 
 
-    // --- КРОК 1: Падрыхтоўка промпту ў залежнасці ад рэжыму ---
+    // 1. Падрыхтоўка промпту
     if (config.MODE === 'PLAYLIST') {
       const sourcePlaylistInfo = Playlist.getById(config.SOURCE_PLAYLIST_ID);
-      if (!sourcePlaylistInfo) throw new Error(`Не знойдзены плэйліст-узор з ID: ${config.SOURCE_PLAYLIST_ID}`);
+      if (!sourcePlaylistInfo) throw new Error(`Не знойдзены плэйліст-узор.`);
       
       sourcePlaylistName = sourcePlaylistInfo.name;
       const sourceTracks = Source.getPlaylistTracks('', config.SOURCE_PLAYLIST_ID);
@@ -85,35 +78,51 @@ function generateCustomPlaylist() {
 
     } else if (config.MODE === 'TOPIC') {
       promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
-    
     } else {
-      throw new Error(`Няправільны рэжым працы: ${config.MODE}. Даступныя: 'TOPIC', 'PLAYLIST'.`);
+      throw new Error(`Няправільны рэжым: ${config.MODE}`);
     }
 
-    // --- КРОК 2: Выклік AI і пошук трэкаў ---
-    Logger.log('Выклік Gemini API для атрымання рэкамендацый...');
-    const aiResponse = callGeminiApi_(geminiApiKey, config.GEMINI_MODEL, promptText);
-    if (!aiResponse) throw new Error('Атрыманы пусты адказ ад Gemini API.');
+    // 2. Выклік AI з цыклам Fallback
+    let aiResponse = null;
+    let usedModel = '';
 
+    Logger.log('🧠 Генерацыя спісу трэкаў...');
+
+    for (const modelName of config.GEMINI_MODELS_PRIORITY) {
+      Logger.log(`🔄 Спроба: "${modelName}"...`);
+      aiResponse = callGeminiApi_(geminiApiKey, modelName, promptText);
+      
+      if (aiResponse) {
+        Logger.log(`✅ Мадэль "${modelName}" адказала.`);
+        usedModel = modelName;
+        break; 
+      } else {
+        Logger.log(`⚠️ Мадэль "${modelName}" не адказала. Пераход да наступнай...`);
+        Utilities.sleep(1000);
+      }
+    }
+
+    if (!aiResponse) throw new Error('❌ Усе мадэлі Gemini недаступныя.');
+
+    // 3. Пошук трэкаў
     const tracksToSearch = parseAiResponse_(aiResponse).map(track => normalizeTrackQuery_(track));
-    Logger.log(`AI рэкамендаваў ${tracksToSearch.length} трэкаў. Пачынаем пошук на Spotify...`);
+    Logger.log(`AI (${usedModel}) прапанаваў ${tracksToSearch.length} трэкаў. Пачынаем пошук...`);
     
     const foundTracks = Search.multisearchTracks(tracksToSearch);
     Filter.dedupTracks(foundTracks);
-    Logger.log(`Пасля пошуку і ачысткі знойдзена ${foundTracks.length} унікальных трэкаў.`);
+    Logger.log(`Знойдзена ${foundTracks.length} унікальных трэкаў.`);
 
     if (foundTracks.length === 0) {
-      Logger.log('Не знойдзена ніводнага трэка. Завяршэнне працы.');
-      return;
+        Logger.log('Трэкі не знойдзены.');
+        return;
     }
     
-    // --- КРОК 3: Захаванне выніку ў залежнасці ад дзеяння ---
+    // 4. Захаванне
     saveOrUpdateCustomPlaylist_(foundTracks, sourcePlaylistName);
-
-    Logger.log('Працэс паспяхова завершаны!');
+    Logger.log('🎉 Гатова!');
 
   } catch (error) {
-    Logger.log(`КРЫТЫЧНАЯ ПАМЫЛКА: ${error.toString()}\nСтэк: ${error.stack}`);
+    Logger.log(`КРЫТЫЧНАЯ ПАМЫЛКА: ${error.toString()}`);
   }
 }
 
@@ -121,38 +130,30 @@ function generateCustomPlaylist() {
 //                ЛОГІКА ЗАХАВАННЯ І АБНАЎЛЕННЯ
 // ===============================================================
 
-/**
- * [ВЕРСІЯ 2.1] Стварае новы або абнаўляе існуючы плэйліст знойдзенымі трэкамі і вокладкай.
- * Уключае надзейны механізм атрымання ID новага плэйліста.
- * @param {Array<Object>} tracks - Масіў знойдзеных на Spotify трэкаў.
- * @param {string} [sourcePlaylistName=''] - Назва плэйліста-крыніцы (для шаблонаў).
- */
 function saveOrUpdateCustomPlaylist_(tracks, sourcePlaylistName = '') {
     const config = GENERATOR_CONFIG;
     const dateStr = new Date().toLocaleDateString('be-BY');
     let playlistId, playlistName, playlistDescription;
 
     if (config.ACTION === 'CREATE_NEW') {
-        Logger.log('Рэжым дзеяння: Стварэнне новага плэйліста.');
+        Logger.log('Стварэнне новага плэйліста...');
 
         if (config.MODE === 'PLAYLIST') {
             playlistName = config.NEW_PLAYLIST_NAME_FOR_PLAYLIST.replace('{source_name}', sourcePlaylistName);
-            playlistDescription = `Згенеравана ${dateStr} на аснове плэйліста "${sourcePlaylistName}".`;
-        } else { // TOPIC mode
+            playlistDescription = `Згенеравана ${dateStr} на аснове "${sourcePlaylistName}".`;
+        } else { 
+            // Генерацыя разумнай кароткай назвы
             let shortTopic = getTopicSummary_(config.TOPIC_PROMPT);
-
             if (!shortTopic) {
-                Logger.log('Не атрымалася згенераваць AI-назву, выкарыстоўваем стандартнае абразанне.');
                 shortTopic = config.TOPIC_PROMPT.length > 50 
                     ? config.TOPIC_PROMPT.substring(0, 47) + '...' 
                     : config.TOPIC_PROMPT;
             }
-            
             playlistName = config.NEW_PLAYLIST_NAME_FOR_TOPIC.replace('{topic}', shortTopic);
             playlistDescription = `Згенеравана ${dateStr} па тэме: "${config.TOPIC_PROMPT}".`;
         }
         
-        Logger.log('Атрыманне спісу плэйлістоў перад стварэннем...');
+        // Лагічны блок стварэння і пошуку ID
         const initialPlaylists = Playlist.getPlaylistArray();
         const initialPlaylistIds = new Set(initialPlaylists.map(p => p.id));
 
@@ -163,60 +164,59 @@ function saveOrUpdateCustomPlaylist_(tracks, sourcePlaylistName = '') {
             tracks: tracks
         });
 
-        Logger.log('Пошук ID новага плэйліста...');
-        Utilities.sleep(3000); 
+        Utilities.sleep(3000); // Чакаем сінхранізацыі
         const finalPlaylists = Playlist.getPlaylistArray();
         const newPlaylist = finalPlaylists.find(p => !initialPlaylistIds.has(p.id));
 
         if (newPlaylist) {
             playlistId = newPlaylist.id;
-            Logger.log(`✅ Новы плэйліст "${playlistName}" паспяхова створаны з ID: ${playlistId}`);
+            Logger.log(`✅ Створаны плэйліст ID: ${playlistId}`);
         } else {
-            Logger.log('Не атрымалася знайсці новы плэйліст па розніцы ID. Спрабуем знайсці па назве...');
+            // Аварыйны пошук па назве
             const foundByName = Playlist.getByName(playlistName);
             if (foundByName) {
                 playlistId = foundByName.id;
-                Logger.log(`✅ Аварыйны пошук: плэйліст "${playlistName}" знойдзены па назве з ID: ${playlistId}`);
+                Logger.log(`✅ Плэйліст знойдзены па назве: ${playlistId}`);
             } else {
-                throw new Error('КРЫТЫЧНА: Не атрымалася вызначыць ID новага плэйліста нават па назве. Магчыма, ён не быў створаны.');
+                Logger.log('⚠️ Не ўдалося вызначыць ID новага плэйліста. Вокладка не будзе ўсталявана.');
             }
         }
 
     } else if (config.ACTION === 'UPDATE_EXISTING') {
-        Logger.log(`Рэжым дзеяння: Абнаўленне існуючага плэйліста (ID: ${config.TARGET_PLAYLIST_ID}).`);
-        if (!config.TARGET_PLAYLIST_ID) throw new Error('Не пазначаны TARGET_PLAYLIST_ID для абнаўлення.');
+        Logger.log(`Абнаўленне плэйліста ID: ${config.TARGET_PLAYLIST_ID}`);
+        if (!config.TARGET_PLAYLIST_ID || config.TARGET_PLAYLIST_ID.includes('INSERT')) {
+             throw new Error('ID для абнаўлення не зададзены.');
+        }
         
         playlistId = config.TARGET_PLAYLIST_ID;
-        const targetPlaylistInfo = Playlist.getById(playlistId);
-        playlistName = targetPlaylistInfo.name;
+        const targetInfo = Playlist.getById(playlistId);
+        playlistName = targetInfo ? targetInfo.name : 'Плэйліст';
 
         playlistDescription = config.MODE === 'PLAYLIST' 
-            ? `Абноўлена ${dateStr} на аснове "${sourcePlaylistName}". ${tracks.length} трэкаў.`
-            : `Абноўлена ${dateStr} па тэме "${config.TOPIC_PROMPT}". ${tracks.length} трэкаў.`;
+            ? `Абноўлена ${dateStr} на аснове "${sourcePlaylistName}".`
+            : `Абноўлена ${dateStr} па тэме "${config.TOPIC_PROMPT}".`;
         
         Playlist.saveWithReplace({
             id: playlistId,
             description: playlistDescription,
             tracks: tracks
         });
-        Logger.log(`✅ Плэйліст "${playlistName}" паспяхова абноўлены.`);
-
-    } else {
-        throw new Error(`Няправільнае дзеянне: ${config.ACTION}. Даступныя: 'CREATE_NEW', 'UPDATE_EXISTING'.`);
+        Logger.log(`✅ Плэйліст абноўлены.`);
     }
 
-    if (config.GENERATE_COVER && playlistId) {
-        Logger.log('Пачатак генерацыі вокладкі...');
-        const coverImageBase64 = generatePlaylistCover_(tracks);
+    // Генерацыя вокладкі (выкарыстоўвае функцыі з галоўнага файла)
+    if (config.GENERATE_COVER && playlistId && typeof generatePlaylistCover_ === 'function') {
+        Logger.log('Генерацыя вокладкі...');
+        // Часова падмяняем ID у глабальным канфігу, каб generatePlaylistCover_ ведала адкуль браць кантэкст,
+        // АБО перадаем трэкі напрамую, калі функцыя гэта падтрымлівае.
+        // У нашай рэалізацыі лепш выкарыстоўваць ужо знойдзеныя трэкі для генерацыі промпта.
+        const coverImageBase64 = generateCoverFromTracksList_(tracks); 
+        
         if (coverImageBase64) {
             try {
                 SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${playlistId}/images`, coverImageBase64);
-                Logger.log('✅ Вокладка паспяхова загружана.');
-            } catch (e) {
-                Logger.log(`⚠️ Памылка падчас загрузкі вокладкі: ${e.toString()}`);
-            }
-        } else {
-             Logger.log('Не атрымалася згенераваць вокладку, крок прапушчаны.');
+                Logger.log('✅ Вокладка загружана.');
+            } catch (e) { Logger.log(`⚠️ Памылка загрузкі вокладкі: ${e}`); }
         }
     }
 }
@@ -227,77 +227,91 @@ function saveOrUpdateCustomPlaylist_(tracks, sourcePlaylistName = '') {
 
 function createPromptFromTopic_(topic) {
   return `
-[Роля]: Ты — музычны энцыклапедыст і куратар з бездакорным густам.
-[Задача]: Ствары плэйліст з ${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} трэкаў, які ідэальна адпавядае наступнаму апісанню: "${topic}".
+[Роля]: Music Curator.
+[Задача]: Ствары плэйліст (${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} трэкаў) па тэме: "${topic}".
 [Правілы]:
-- Падбірай як вядомыя, так і менш відавочныя трэкі, якія адпавядаюць тэме.
-- Забяспеч разнастайнасць унутры зададзенага стылю.
-- Не ўключай песні на рускай мове.
-[Фармат вываду]: Вярні вынік ВЫКЛЮЧНА як JSON-масіў радкоў. Кожны радок - "Artist Name - Track Title".
+- Разнастайны мікс (хіты + андэграўнд).
+- Выключыць: Рускамоўныя песні (Russian language).
+- Прыярытэт: Якасць і атмасфера.
+[Фармат]: ВЫКЛЮЧНА JSON-масіў радкоў "Artist - Track".
 `;
 }
 
 function createPromptFromPlaylist_(playlistName, tracksJsonString) {
   return `
-[Роля]: Ты — прафесійны музычны куратар, які аналізуе ДНК існуючага плэйліста, каб стварыць яго ідэальнае прадаўжэнне.
-[Уваходныя даныя]: Плэйліст пад назвай "${playlistName}" у фармаце JSON:
-\`\`\`json
-${tracksJsonString}
-\`\`\`
-[Задача]: Прааналізуй жанры, настрой, эпохі і гучанне трэкаў. На аснове гэтага ствары новы плэйліст з ${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} трэкаў, які будзе адчувацца як натуральнае, але нечаканае развіццё арыгінала.
+[Роля]: AI Music Curator.
+[Уваход]: Плэйліст "${playlistName}" (JSON).
+\`\`\`${tracksJsonString}\`\`\`
+[Задача]: Ствары працяг/сіквел (${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} трэкаў).
 [Правілы]:
-- ~70% рэкамендацый павінны дакладна адпавядаць стылю арыгінала.
-- ~30% павінны быць "крокам убок" - сумежныя жанры, іншыя эпохі, менш вядомыя выканаўцы.
-- НЕ ўключай у адказ трэкі з арыгінальнага плэйліста.
-[Фармат вываду]: Вярні вынік ВЫКЛЮЧНА як JSON-масіў радкоў. Кожны радок - "Artist Name - Track Title".
+- 70% падобны стыль, 30% эксперыменты.
+- Выключыць: Рускамоўныя песні.
+- Выключыць: Дублікаты з уваходу.
+[Фармат]: ВЫКЛЮЧНА JSON-масіў радкоў "Artist - Track".
 `;
 }
 
 function prepareEnrichedSample_(sourceTracks) {
-  Logger.log(`Выбіраем ${GENERATOR_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI} трэкаў для аналізу...`);
+  Logger.log(`Выбарка ${GENERATOR_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI} трэкаў...`);
   const randomSample = Selector.sliceRandom(sourceTracks, GENERATOR_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI);
-  const fullArtistsInfo = getCachedTracks(randomSample, { artist: true }).artists;
+  // Спрошчаны фармат для эканоміі токенаў
   const enrichedSample = randomSample.map(track => {
-    if (!track?.name || !track.artists?.[0]?.id || !track.album) return null;
-    const artistInfo = fullArtistsInfo[track.artists[0].id] || {};
-    return {
-      artist: track.artists[0].name,
-      track: track.name,
-      year: track.album.release_date ? new Date(track.album.release_date).getFullYear() : null,
-      genres: artistInfo.genres || [],
-      popularity: track.popularity || 0
-    };
+    if (!track?.name || !track.artists?.[0]?.name) return null;
+    return `${track.artists[0].name} - ${track.name}`;
   }).filter(item => item !== null);
-  Logger.log(`Створана "ўзбагачаная" выбарка з ${enrichedSample.length} трэкаў для адпраўкі ў AI.`);
   return JSON.stringify(enrichedSample);
 }
 
 function getTopicSummary_(topicPrompt) {
-  if (topicPrompt.length <= 20) {
-    return topicPrompt;
-  }
-  Logger.log('Стварэнне кароткай назвы для плэйліста з дапамогай AI...');
+  if (topicPrompt.length <= 25) return topicPrompt;
+
+  Logger.log('Стварэнне кароткай назвы...');
   const summaryPrompt = `
-[Роля]: Ты — эксперт па стварэнні кароткіх, выразных загалоўкаў.
-[Задача]: Прааналізуй наступную тэму для музычнага плэйліста і сцісні яе сутнасць да 2-3 выразных слоў на той жа мове (беларускай).
-[Тэма]: "${topicPrompt}"
-[Правілы]:
-- Адказ павінен быць ВЫКЛЮЧНА кароткай назвай.
-- Без двукоссяў, без тлумачэнняў, без дадатковых слоў.
-[Прыклад]: Калі тэма "Атмасферны пост-панк і колдвейв для начной паездкі па горадзе ў дождж", добры вынік — "Начны Пост-панк" або "Дажджлівы Колдвейв".
+Shorten this playlist title to 2-3 words (Belarusian language). 
+Topic: "${topicPrompt}". 
+Output ONLY the title. No quotes.
 `;
-  try {
-    const geminiApiKey = getGeminiApiKey_();
-    const summary = callGeminiApi_(geminiApiKey, 'gemini-2.5-flash', summaryPrompt);
-    if (summary && summary.trim().length > 0) {
-      Logger.log(`AI прапанаваў кароткую назву: "${summary.trim()}"`);
-      return summary.trim().replace(/"/g, '');
-    } else {
-      Logger.log('AI вярнуў пусты адказ для назвы.');
-      return null;
-    }
-  } catch (e) {
-    Logger.log(`Памылка падчас стварэння кароткай назвы: ${e.toString()}`);
-    return null;
+  
+  const apiKey = getGeminiApiKey_();
+  for (const model of GENERATOR_CONFIG.GEMINI_MODELS_PRIORITY) {
+    try {
+       const summary = callGeminiApi_(apiKey, model, summaryPrompt);
+       if (summary && summary.trim().length > 0) {
+         return summary.trim().replace(/["«»]/g, '');
+       }
+    } catch (e) {}
   }
+  return null;
+}
+
+/**
+ * Лакальная версія генератара вокладкі, якая прымае спіс трэкаў наўпрост.
+ * Гэта дазваляе не залежаць ад глабальнага ID плэйліста.
+ */
+function generateCoverFromTracksList_(tracks) {
+    if (typeof createImagePromptFromTracks_ !== 'function' || typeof callHuggingFaceApiWithModel_ !== 'function') {
+        Logger.log('Неабходныя функцыі з AI_Плэйлісты.gs недаступныя.');
+        return null;
+    }
+
+    const imagePrompt = createImagePromptFromTracks_(tracks);
+    if (!imagePrompt) return null;
+
+    // Выкарыстоўваем "Залаты спіс" з глабальнага канфіга AI_Плэйлісты.gs або лакальны дэфолт
+    const models = (typeof AI_CONFIG !== 'undefined' && AI_CONFIG.IMAGE_GENERATION) 
+        ? [
+            AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.FLUX_DEV,
+            AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.FLUX_SCHNELL,
+            AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.SD3_MEDIUM,
+            AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.SDXL_BASE
+          ]
+        : ['black-forest-labs/FLUX.1-schnell', 'stabilityai/stable-diffusion-xl-base-1.0'];
+
+    for (const modelId of models) {
+        if (!modelId) continue;
+        Logger.log(`🎨 Генерацыя вокладкі: "${modelId}"...`);
+        const imageBase64 = callHuggingFaceApiWithModel_(imagePrompt, modelId);
+        if (imageBase64) return imageBase64;
+    }
+    return null;
 }
