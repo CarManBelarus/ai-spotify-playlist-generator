@@ -1,17 +1,27 @@
 # AI Spotify Playlist Generator
 
-A Google Apps Script project that uses Google's Gemini AI to automatically generate personalized Spotify playlists and create unique, AI-generated cover art for them using Hugging Face.
+A Google Apps Script project that leverages **Google's Gemini AI** to generate personalized Spotify playlists and **Hugging Face** to create unique, AI-generated cover art.
 
-This script analyzes your existing music library from the Goofy library's cache, finds new track recommendations tailored to your taste, and designs a custom cover image that visually represents the playlist's mood.
+This repository contains a set of add-on scripts for the [Goofy library](https://chimildic.github.io/goofy/) that enable advanced automation and smart playlist creation.
 
-## Key Features
+## Project Components
 
--   **AI-Powered Recommendations:** Uses the Gemini AI model to analyze a sample of your music library and generate a list of new track recommendations.
--   **No Manual Export Needed:** Reads your "Liked Songs" directly from the cache file (`SavedTracks.json`) automatically maintained by the Goofy library.
--   **Hugging Face Cover Art:** Automatically generates a unique, atmospheric cover image for each playlist update using powerful text-to-image models (e.g., Juggernaut XL, Stable Diffusion 3).
--   **Smart Playlist Management:** Reliably updates a target playlist by adding new tracks to the top (preserving the "date added" of old tracks) and then trimming the oldest ones if the playlist exceeds a specified size limit.
--   **Automated Cleanup:** Includes a separate function to remove tracks you've recently listened to, keeping the playlist fresh.
--   **Highly Customizable:** All key parameters, including the cover art generation model, are configured at the top of the script file.
+The project consists of two main scripts:
+
+1.  ### `AI_playlist.gs` (Automated Daily Playlist)
+    The core script for maintaining a personal "Discovery Playlist". It runs automatically on a schedule.
+
+    -   **Library Analysis:** Scans your saved tracks (`SavedTracks.json`) to understand your musical taste.
+    -   **Multi-Model AI:** Uses a robust fallback system: if the primary model (Gemini Pro) is overloaded, it automatically switches to a backup (Flash) to ensure reliability.
+    -   **Smart Updates:** Daily adds fresh recommendations to the top of the playlist while preserving history, and trims the oldest tracks when the limit is reached.
+    -   **Premium Cover Art:** Generates high-quality covers using top-tier models like **FLUX.1** (with fallback to Stable Diffusion 3 and XL).
+
+2.  ### `AI_Generator.gs` (Universal On-Demand Generator)
+    A flexible tool for creating thematic playlists manually. Controlled via configuration changes.
+
+    -   **Two Modes:** Can create playlists based on a text topic (**Topic Mode**) or based on an existing playlist template (**Playlist Mode** - creating a sequel).
+    -   **Create or Update:** Supports creating brand new playlists or completely overwriting existing ones.
+    -   **Smart Naming:** Automatically generates short, catchy titles for your new playlists based on your prompt.
 
 ---
 
@@ -22,151 +32,94 @@ This guide will walk you through setting up the project from scratch.
 ### Prerequisites
 
 -   A Google Account (for Google Apps Script).
--   A Spotify Account (Premium is recommended for full API access).
--   A Hugging Face Account (free, for cover art generation).
+-   A Spotify Account (Premium recommended for full API access).
+-   A Hugging Face Account (free, required for cover art).
 
 ---
 
 ### Part 1: Initial Goofy Library Setup
 
-This project is an add-on for the powerful `goofy` library. Setting it up correctly is the most important step.
+This project is an extension of the `goofy` library. Setting it up correctly is the first step.
 
-1.  **Follow the official Goofy installation guide**. Go to the link below and complete **all the steps**, including the "First Playlist" tutorial. This is crucial because it ensures Goofy is fully authorized and starts caching your saved tracks.
+1.  **Follow the official Goofy installation guide.**
     -   **[Official Goofy Installation Guide](https://chimildic.github.io/goofy/#/install)**
+    Complete **all steps**, including the "First Playlist" tutorial. This ensures Goofy is authorized and begins caching your library.
 
-2.  **What you will accomplish in this part:**
-    -   Create a new Google Apps Script project with all the necessary Goofy files (`library.js`, `config.gs`, etc.).
-    -   Create a Spotify Developer Application to get your `CLIENT_ID` and `CLIENT_SECRET`.
-    -   Configure your project's `config.gs` file and authorize the script.
-    -   **Crucially, Goofy will start creating a `SavedTracks.json` file in a `Goofy Data` folder on your Google Drive. This file is essential for our script.**
-
-3.  **Wait for the cache to build.** After the initial setup, Goofy needs some time to build a complete cache of your "Liked Songs". This can take a few hours to a day, depending on your library size. You can proceed with the next steps while this happens in the background.
+2.  **Wait for the cache to build.** After setup, Goofy needs time to create the `SavedTracks.json` file in your Google Drive. This is essential for the AI analysis.
 
 ---
 
-### Part 2: Gathering Your IDs and API Keys
+### Part 2: Gathering IDs and API Keys
 
-Now, let's collect the credentials needed for our AI script.
+Collect the following credentials:
 
-#### A. Spotify Playlist ID (`SPOTIFY_PLAYLIST_ID`)
+1.  **Spotify Playlist ID:**
+    *   Open Spotify (Web or App).
+    *   Right-click on a playlist -> "Share" -> "Copy link to playlist".
+    *   The ID is the string of characters after `playlist/` and before `?`.
 
-This is the ID of the playlist you want the script to manage. You can use an existing playlist or create a new empty one.
+2.  **Google Gemini API Key:**
+    *   Create a free key at **[Google AI Studio](https://aistudio.google.com/)**.
 
-1.  Open Spotify.
-2.  Find or create the playlist you want to use.
-3.  Click the **`...`** (more options) button next to the playlist title.
-4.  Go to **Share** -> **Copy link to playlist**.
-5.  The link will look like this: `https://open.spotify.com/playlist/37i9dQZF1DXcBWXoPEoRv1?si=...`
-6.  Your Playlist ID is the string of characters between `playlist/` and `?`. From the example above, it's `37i9dQZF1DXcBWXoPEoRv1`. **Copy this ID.**
-
-#### B. Google Gemini API Key (`GEMINI_API_KEY`)
-
-This is your personal key to access the Gemini AI model for music analysis.
-
-1.  Go to the **[Google AI Studio](https://aistudio.google.com/)**.
-2.  Sign in with your Google Account.
-3.  On the left panel, click **"Get API key"**.
-4.  Click the **"Create API key in new project"** button.
-5.  A new API key will be generated for you. **Copy this long string of characters** and save it somewhere safe.
-
-#### C. Hugging Face API Key (`HUGGINGFACE_API_KEY`)
-
-This is your access key for the Hugging Face service to generate cover art.
-
-1.  Go to the **[Hugging Face](https://huggingface.co/)** website and sign up or log in.
-2.  Click your profile picture in the top-right corner and select **Settings**.
-3.  On the left panel, go to the **Access Tokens** section.
-4.  Click the **New token** button.
-5.  Give the token a name (e.g., `gas-spotify-covers`) and select the **read** `Role`.
-6.  Click **Generate a token**. **Copy this token** (it will start with `hf_...`).
+3.  **Hugging Face API Key + Access (IMPORTANT):**
+    *   Create a token in your **[Hugging Face Settings](https://huggingface.co/settings/tokens)** (type `read`).
+    *   **⚠️ CRITICAL STEP:** This project uses the powerful **FLUX.1** models. To use them, you **must** visit the links below and click **"Agree and access repository"** to accept the license:
+        *   [Access black-forest-labs/FLUX.1-dev](https://huggingface.co/black-forest-labs/FLUX.1-dev)
+        *   [Access black-forest-labs/FLUX.1-schnell](https://huggingface.co/black-forest-labs/FLUX.1-schnell)
+    *   *Without this step, cover art generation will fail with a 403 error.*
 
 ---
 
-### Part 3: Adding and Configuring the Custom AI Script
+### Part 3: Adding and Configuring AI Scripts
 
-Now we will add our AI-powered logic to your Goofy project.
+1.  **Create new files in your Goofy project:**
+    *   Click `+` next to "Files" -> **Script**.
+    *   Create a file named **`AI_Playlist`**.
+    *   Create a second file named **`AI_Generator`**.
 
-1.  **Create a New File for the AI Script:**
-    *   In your existing Goofy Apps Script project, click the **`+`** icon next to "Files" to add a new file.
-    *   Select **"Script"**.
-    *   Name the new file **`AI_Playlist`** and press Enter.
+2.  **Add the code:**
+    *   Copy the content of `AI_playlist.gs` from this repository into your `AI_Playlist` file.
+    *   Copy the content of `AI_Generator.gs` into your `AI_Generator` file.
 
-2.  **Add the AI Script Code:**
-    *   Open the `AI_Playlist.gs` file you just created.
-    *   Copy the entire code from the `AI_Playlist.gs` file in this repository and paste it into your new file.
+3.  **Configure the scripts:**
+    *   In `AI_Playlist.gs`, locate the `AI_CONFIG` block and paste your **Spotify Playlist ID**.
+    *   In `AI_Generator.gs`, modify the `GENERATOR_CONFIG` block whenever you want to run a manual generation task.
+    *   **Save both files** (<kbd>Ctrl</kbd>+<kbd>S</kbd>).
 
-3.  **Configure the AI Script:**
-    *   In the `AI_Playlist.gs` file you just added, find the `AI_CONFIG` block at the very top.
-    *   Paste the Playlist ID you gathered in Part 2:
+---
+
+### Part 4: Final Configuration
+
+1.  **Add API Keys to Script Properties:**
+    *   Go to **Project Settings** (⚙️) -> **Script Properties**.
+    *   Add two properties:
+        *   `GEMINI_API_KEY`: Your Google Gemini key.
+        *   `HUGGINGFACE_API_KEY`: Your Hugging Face token.
+    *   Save the properties.
+
+2.  **Fine-Tune Search Accuracy (Recommended):**
+    *   Open `config.gs` and add this line inside the `setProperties()` function:
         ```javascript
-        const AI_CONFIG = {
-          SPOTIFY_PLAYLIST_ID: 'YOUR_SPOTIFY_PLAYLIST_ID_HERE', // <<<=== PASTE YOUR PLAYLIST ID
-          // ... other settings ...
-        };
+        UserProperties.setProperty('MIN_DICE_RATING', '0.70');
         ```
-    *   Review the other settings in `AI_CONFIG` (like `SELECTED_MODEL_ID` for the cover art) and adjust them if needed.
-    *   **Save the file** (<kbd>Ctrl</kbd>+<kbd>S</kbd>).
+    *   This improves the accuracy of track matching on Spotify.
 
 ---
 
-### Part 4: Final Configuration (Script Properties & Fine-Tuning)
+### Part 5: Running and Automating
 
-#### A. Add Your API Keys
+#### Automating the Daily Playlist (`AI_Playlist.gs`)
 
-1.  In the Apps Script editor, click on **Project Settings** (gear icon ⚙️) on the left sidebar.
-2.  Scroll down to the **"Script Properties"** section.
-3.  Click **"Edit script properties"**, then click **"Add script property"** twice to add two keys:
+1.  Go to **Triggers** (⏰).
+2.  Create a trigger for `generateAndCreateSpotifyPlaylist` -> `Time-driven` -> `Day timer` (e.g., Midnight to 1am).
+3.  *(Optional)* Create a trigger for `cleanUpPlaylist` -> `Time-driven` -> `Hour timer` (Every hour).
 
-    *   **Key 1 (Gemini):**
-        *   **Property:** `GEMINI_API_KEY`
-        *   **Value:** Paste your Gemini API Key that you copied earlier.
+#### Running the Universal Generator (`AI_Generator.gs`)
 
-    *   **Key 2 (Hugging Face):**
-        *   **Property:** `HUGGINGFACE_API_KEY`
-        *   **Value:** Paste your Hugging Face Access Token (`hf_...`).
+This script is run manually on demand.
 
-4.  Click **"Save script properties"**.
-
-#### B. Fine-Tune Search Accuracy (Highly Recommended)
-
-To get the best results, it's recommended to adjust Goofy's search sensitivity.
-
-1.  Open the `config.gs` file in your project.
-2.  Add the following line inside the `setProperties()` function:
-    ```javascript
-    UserProperties.setProperty('MIN_DICE_RATING', '0.70');
-    ```
-3.  **Why?** This setting controls how similar a track name from the AI must be to a search result from Spotify. The default is `0.6`. A higher value like `0.70` makes the search stricter and reduces the chance of adding incorrect tracks to your playlist.
-4.  **Save the `config.gs` file.**
-
----
-
-### Part 5: Running and Automating the Script
-
-You are all set!
-
-1.  **Run a Test:**
-    *   In the Apps Script editor, ensure you are viewing the `AI_Playlist.gs` file.
-    *   In the function dropdown menu at the top, select `generateAndCreateSpotifyPlaylist`.
-    *   Click the **"Run"** button.
-    *   The script will take a few minutes. You can monitor its progress in the "Execution log".
-    *   If successful, your Spotify playlist will be updated with new tracks and a new, AI-generated cover!
-
-2.  **Set Up Automation (Triggers):**
-    *   To make the script run automatically, click on the **Triggers** (clock icon ⏰) on the left sidebar.
-    *   Click **"Add Trigger"**.
-
-    **Trigger 1: Daily Playlist Generation**
-    *   **Choose which function to run:** `generateAndCreateSpotifyPlaylist`
-    *   **Select event source:** `Time-driven`
-    *   **Select type of time based trigger:** `Day timer`
-    *   **Select time of day:** `4am to 5am` (or any time you prefer).
-    *   Click **"Save"**.
-
-    **Trigger 2: Hourly Playlist Cleanup (Optional)**
-    *   Click **"Add Trigger"** again.
-    *   **Choose which function to run:** `cleanUpPlaylist`
-    *   **Select event source:** `Time-driven`
-    *   **Select type of time based trigger:** `Hour timer`
-    *   **Select hour interval:** `Every hour`.
-    *   Click **"Save"**.
+1.  Open `AI_Generator.gs`.
+2.  Adjust `GENERATOR_CONFIG` (choose mode, topic, or source playlist).
+3.  Select `generateCustomPlaylist` from the dropdown menu.
+4.  Click **"Run"**.
+5.  Watch the "Execution log" and enjoy your new playlist!
