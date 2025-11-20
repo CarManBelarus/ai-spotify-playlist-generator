@@ -1,10 +1,13 @@
 /**
  * @OnlyCurrentDoc
  * Галоўны файл для працы з Gemini AI для стварэння плэйлістоў Spotify.
- * Гэты скрыпт аналізуе вашу бібліятэку, атрымлівае рэкамендацыі ад AI і генеруе карыстальніцкія вокладкі.
- *
- * Версія: 4.0 (Надзейная версія з модульным абнаўленнем плэйліста, ланцужком запасных мадэляў 
- * для генерацыі вокладак і палепшанай нармалізацыяй трэкаў.)
+ * ВЕРСІЯ: "Golden Release" (Multi-Model Gemini + FLUX/SD3 Cover Art)
+ * 
+ * Гэты скрыпт:
+ * 1. Аналізуе вашу бібліятэку (SavedTracks.json).
+ * 2. Генекуе рэкамендацыі праз Google Gemini (з рэзервовымі мадэлямі).
+ * 3. Шукае трэкі ў Spotify (з падтрымкай кірыліцы).
+ * 4. Стварае AI-вокладку праз Hugging Face (FLUX/SD3).
  */
 
 // ===============================================================
@@ -13,41 +16,51 @@
 
 const AI_CONFIG = {
   // === АБАВЯЗКОВЫЯ НАЛАДЫ ===
-
+  
   // ID плэйліста Spotify, які будзе абнаўляцца.
-  // Прыклад: '78uFpogH6uDyrEbFxzfp2L'
-  SPOTIFY_PLAYLIST_ID: 'YOUR_SPOTIFY_PLAYLIST_ID_HERE', // <<<=== УСТАЎЦЕ ВАШ ID ПЛЭЙЛІСТА
+  // Вы можаце ўзяць яго з URL плэйліста: open.spotify.com/playlist/ВАШ_ID
+  SPOTIFY_PLAYLIST_ID: 'INSERT_YOUR_PLAYLIST_ID_HERE', 
 
-  // === НАЛАДЫ AI І ПЛЭЙЛІСТА ===
+  // === НАЛАДЫ GEMINI (MULTI-MODEL FALLBACK) ===
+  // Спіс мадэляў па прыярытэце. Калі першая занятая (503) або недаступная, 
+  // скрыпт аўтаматычна паспрабуе наступную.
+  GEMINI_MODELS_PRIORITY: [
+    'gemini-2.5-pro',          // 1. "Мозг": Лепшая якасць і эрудыцыя
+    'gemini-flash-latest',     // 2. "Хуткасць": Актуальная версія Flash (рэзерв)
+    'gemini-flash-lite-latest' // 3. "Лёгкасць": Самая эканамічная мадэль (апошні шанец)
+  ],
 
-  // Мадэль Gemini, якая будзе выкарыстоўвацца для генерацыі рэкамендацый.
-  GEMINI_MODEL: 'gemini-2.5-pro',
+  // Колькасць трэкаў для аналізу з вашай бібліятэкі (каб не перавысіць ліміт токенаў)
+  TRACK_SAMPLE_SIZE_FOR_AI: 500,
 
-  // Колькасць выпадковых трэкаў з вашай бібліятэкі для аналізу AI.
-  TRACK_SAMPLE_SIZE_FOR_AI: 700,
-
-  // Максімальны памер фінальнага плэйліста.
-  MAX_PLAYLIST_SIZE: 500,
-
-  // Шаблон для назвы плэйліста. {date} будзе заменена на бягучую дату.
-  PLAYLIST_NAME_TEMPLATE: 'AI Плэйліст ад {date}',
+  // Максімальны памер плэйліста перад выдаленнем старых трэкаў.
+  MAX_PLAYLIST_SIZE: 500, 
 
   // === НАЛАДЫ ГЕНЕРАЦЫІ ВОКЛАДКІ (ПРАЗ HUGGING FACE) ===
-
   IMAGE_GENERATION: {
-    ENABLED: true,
-    // [РЭКАМЕНДАВАНЫЯ МАДЭЛІ] Гэтыя мадэлі правераны і даюць добры вынік.
-    AVAILABLE_MODELS: {
-      FLUX_SCHNELL: 'black-forest-labs/FLUX.1-schnell', // Лепшы баланс хуткасці і якасці
-      STABLE_DIFFUSION_3: 'stabilityai/stable-diffusion-3-medium-diffusers', // Лепшая якасць
-      DEFAULT_SDXL: 'stabilityai/stable-diffusion-xl-base-1.0' // Надзейная класіка
-    }
+      ENABLED: true,
+      
+      // "Залаты спіс" правераных мадэляў. Скрыпт будзе спрабаваць іх па чарзе.
+      AVAILABLE_MODELS: {
+        // 1. Топ па якасці і дэталізацыі (~10-15 сек). Патрабуе прыняцця ліцэнзіі на HF.
+        FLUX_DEV: 'black-forest-labs/FLUX.1-dev', 
+        
+        // 2. Топ па хуткасці (~2-3 сек).
+        FLUX_SCHNELL: 'black-forest-labs/FLUX.1-schnell', 
+        
+        // 3. Іншы мастацкі стыль (Stable Diffusion 3).
+        SD3_MEDIUM: 'stabilityai/stable-diffusion-3-medium-diffusers',
+        
+        // 4. Надзейная класіка (заўсёды працуе без дадатковых ліцэнзій).
+        SDXL_BASE: 'stabilityai/stable-diffusion-xl-base-1.0'
+      }
   },
 
-  // === НАЛАДЫ АЧЫСТКІ ПЛЭЙЛІСТА ===
-
-  // Перыяд (у днях), за які праслуханыя трэкі будуць выдаляцца з плэйліста.
-  CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS: 30,
+  // Шаблон назвы плэйліста. {date} замяняецца на бягучую дату.
+  PLAYLIST_NAME_TEMPLATE: 'AI Плэйліст ад {date}',
+  
+  // Колькасць дзён, пасля якіх праслуханыя трэкі выдаляюцца (для функцыі cleanUpPlaylist)
+  CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS: 60
 };
 
 // ===============================================================
@@ -55,462 +68,494 @@ const AI_CONFIG = {
 // ===============================================================
 
 /**
- * Галоўная функцыя для генерацыі і абнаўлення плэйліста Spotify з дапамогай Gemini AI.
+ * Запускае поўны цыкл: Аналіз -> Генерацыя спісу -> Пошук -> Абнаўленне -> Вокладка.
  */
 function generateAndCreateSpotifyPlaylist() {
   try {
     Logger.log('Пачатак працэсу стварэння AI плэйліста...');
     const geminiApiKey = getGeminiApiKey_();
+    
+    // 1. Падрыхтоўка дадзеных
     const randomTracksJsonString = prepareTracksForPrompt_();
-    if (!randomTracksJsonString) return;
+    if (!randomTracksJsonString) return; // Спыняем, калі няма дадзеных
 
-    Logger.log('Стварэнне промпту для Gemini AI...');
+    Logger.log('Стварэнне тэксту запыту (промпту) для Gemini AI...');
     const promptText = createTrackRecommendationPrompt_(randomTracksJsonString);
 
-    Logger.log(`Выклік мадэлі ${AI_CONFIG.GEMINI_MODEL}...`);
-    const aiResponseJsonString = callGeminiApi_(geminiApiKey, AI_CONFIG.GEMINI_MODEL, promptText);
-    if (!aiResponseJsonString) {
-      throw new Error('Атрыманы пусты або несапраўдны адказ ад Gemini API.');
+    // 2. Выклік AI з цыклам "выратавання" (Fallback Loop)
+    let aiResponseJsonString = null;
+    let usedModel = '';
+
+    for (const modelName of AI_CONFIG.GEMINI_MODELS_PRIORITY) {
+      Logger.log(`🔄 Спроба выкліку мадэлі: "${modelName}"...`);
+      aiResponseJsonString = callGeminiApi_(geminiApiKey, modelName, promptText);
+      
+      if (aiResponseJsonString) {
+        Logger.log(`✅ Мадэль "${modelName}" паспяхова адказала.`);
+        usedModel = modelName;
+        break; 
+      } else {
+        Logger.log(`⚠️ Мадэль "${modelName}" не адказала. Пераход да наступнай...`);
+        Utilities.sleep(1000); // Паўза перад наступнай спробай
+      }
     }
 
+    if (!aiResponseJsonString) throw new Error('❌ Усе мадэлі Gemini недаступныя (503/Error).');
+
+    // 3. Апрацоўка адказу
+    Logger.log('Парсінг JSON-адказу ад AI...');
     const tracksToSearch = parseAiResponse_(aiResponseJsonString);
+    Logger.log(`AI (${usedModel}) рэкамендаваў ${tracksToSearch.length} трэкаў для пошуку.`);
+
     if (tracksToSearch.length === 0) {
-      Logger.log('AI не вярнуў трэкаў для пошуку. Спыненне выканання.');
-      return;
+        Logger.log('Спіс трэкаў пусты. Спыненне.');
+        return;
     }
-    Logger.log(`AI рэкамендаваў ${tracksToSearch.length} трэкаў для пошуку.`);
 
-    const normalizedQueries = [...new Set(tracksToSearch.map(track => normalizeTrackQuery_(track)).filter(q => q))];
+    // ===============================================================
+    //           РАЗУМНЫ ДВУХЭТАПНЫ ПОШУК
+    // ===============================================================
 
-    Logger.log(`Пошук ${normalizedQueries.length} трэкаў на Spotify...`);
-    let foundSpotifyTracks = Search.multisearchTracks(normalizedQueries);
+    Logger.log('Падрыхтоўка запытаў для пошуку...');
+    const initialLatinQueries = [...new Set(tracksToSearch.map(track => normalizeTrackQuery_(track)).filter(q => q))];
+
+    // --- ЭТАП 1: Пошук па лацінцы ---
+    Logger.log(`[Этап 1] Пошук ${initialLatinQueries.length} трэкаў па лацінскіх назвах...`);
+    let foundSpotifyTracks = Search.multisearchTracks(initialLatinQueries);
+    
+    // Вызначаем, што не знайшлі
+    const foundTrackNames = new Set(foundSpotifyTracks.map(t => `${t.artists[0].name} ${t.name}`.toLowerCase()));
+    const notFoundQueries = initialLatinQueries.filter(query => {
+        return !Array.from(foundTrackNames).some(found => found.includes(query.split(' ')[1]));
+    });
+
+    // --- ЭТАП 2: Пошук па кірыліцы (для мясцовай музыкі) ---
+    if (notFoundQueries.length > 0) {
+      Logger.log(`${notFoundQueries.length} трэкаў не знойдзена. Спроба пошуку па кірылічных варыянтах...`);
+      const cyrillicQueries = [];
+      notFoundQueries.forEach(query => {
+        const cyrillicGuess = reverseTransliterate_(query);
+        if (cyrillicGuess) {
+          cyrillicQueries.push(cyrillicGuess);
+          Logger.log(`[Дадатковы запыт] "${query}" -> "${cyrillicGuess}"`);
+        }
+      });
+
+      if (cyrillicQueries.length > 0) {
+        const additionalFoundTracks = Search.multisearchTracks(cyrillicQueries);
+        Logger.log(`[Этап 2] Дадаткова знойдзена ${additionalFoundTracks.length} трэкаў.`);
+        foundSpotifyTracks.push(...additionalFoundTracks);
+      }
+    }
+
+    // Выдаленне дублікатаў у выніках пошуку
     Filter.dedupTracks(foundSpotifyTracks);
-    Logger.log(`Усяго знойдзена ${foundSpotifyTracks.length} унікальных трэкаў на Spotify.`);
+    Logger.log(`Усяго знойдзена ${foundSpotifyTracks.length} унікальных трэкаў.`);
 
     if (foundSpotifyTracks.length === 0) {
-      Logger.log('Не знойдзена ніводнага трэка на Spotify. Спыненне выканання.');
+      Logger.log('Няма трэкаў для дадавання на Spotify.');
       return;
     }
 
-    // Выклік модульнай логікі абнаўлення плэйліста
+    // 4. Абнаўленне плэйліста
     updatePlaylistIncrementally_(foundSpotifyTracks);
-
-    Logger.log('✅ Працэс стварэння/абнаўлення плэйліста паспяхова завершаны.');
+    Logger.log('🎉 Працэс паспяхова завершаны.');
 
   } catch (error) {
     Logger.log(`КРЫТЫЧНАЯ ПАМЫЛКА: ${error.toString()}`);
-    Logger.log(`Стэк выклікаў: ${error.stack}`);
+    Logger.log(`Стэк: ${error.stack}`);
   }
 }
 
 // ===============================================================
-//                МОДУЛЬНАЕ АБНАЎЛЕННЕ ПЛЭЙЛІСТА
+//         АБНАЎЛЕННЕ ПЛЭЙЛІСТА І ВОКЛАДКІ
 // ===============================================================
 
-/**
- * Інкрэментальна абнаўляе плэйліст: дадае новыя трэкі і запускае працэсы 
- * абнаўлення метаданых і абразання.
- * @param {Array<Object>} foundSpotifyTracks Масіў новых трэкаў для дадання.
- */
 function updatePlaylistIncrementally_(foundSpotifyTracks) {
-  const playlistId = AI_CONFIG.SPOTIFY_PLAYLIST_ID;
-  Logger.log(`Атрыманне існуючых трэкаў з плэйліста ID: ${playlistId}...`);
-  const existingPlaylistTracks = Source.getPlaylistTracks('', playlistId);
+  Logger.log(`Атрыманне існуючых трэкаў з плэйліста...`);
+  const existingPlaylistTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
   
+  // Пакідаем толькі тыя, якіх яшчэ няма ў плэйлісце
   let newUniqueTracks = Selector.sliceCopy(foundSpotifyTracks);
   Filter.removeTracks(newUniqueTracks, existingPlaylistTracks);
   const newTracksCount = newUniqueTracks.length;
+  Logger.log(`Знойдзена ${newTracksCount} новых, унікальных трэкаў для дадавання.`);
 
   if (newTracksCount > 0) {
-    Logger.log(`Знойдзена ${newTracksCount} новых трэкаў. Пачатак папарцыйнага дадання...`);
-    const CHUNK_SIZE = 100; // Ліміт Spotify API
+    Logger.log(`Пачатак папарцыйнага дадання ${newTracksCount} трэкаў...`);
+    const CHUNK_SIZE = 100; // Абмежаванне API Spotify
     for (let i = 0; i < newTracksCount; i += CHUNK_SIZE) {
       const chunk = newUniqueTracks.slice(i, i + CHUNK_SIZE);
       Logger.log(`Даданне часткі з ${chunk.length} трэкаў...`);
       try {
-        Playlist.saveWithAppend({ id: playlistId, tracks: chunk, position: 'begin' });
-        if (newTracksCount > CHUNK_SIZE) Utilities.sleep(1000); // Паўза паміж запытамі
+        Playlist.saveWithAppend({
+          id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
+          tracks: chunk,
+          position: 'begin' // Новыя трэкі ў пачатак
+        });
+        if (newTracksCount > CHUNK_SIZE) Utilities.sleep(2000); // Паўза, каб не перагрузіць API
       } catch (e) {
-        Logger.log(`ПАМЫЛКА падчас дадання часткі трэкаў: ${e.toString()}`);
+        Logger.log(`ПАМЫЛКА дадання часткі: ${e}`);
       }
     }
-  } else {
-    Logger.log('Новых трэкаў для дадавання не знойдзена.');
+    Logger.log('Папарцыйнае даданне завершана.');
   }
   
-  const finalTotalTracks = Source.getPlaylistTracks('', playlistId).length;
-
-  // Абнаўляем назву, апісанне і вокладку асобна
+  const finalTotalTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID).length;
   updatePlaylistDetailsAndCover_(newTracksCount, finalTotalTracks);
-  
-  // Запускаем праверку і абразанне плэйліста
   trimPlaylistIfNeeded_();
 }
 
-/**
- * Абнаўляе метаданыя плэйліста (назву, апісанне) і вокладку, не закранаючы спіс трэкаў.
- * Выкарыстоўвае прамыя API-запыты для захавання арыгінальных дат дадання трэкаў.
- * @param {number} addedCount Колькасць дададзеных трэкаў.
- * @param {number} totalCount Агульная колькасць трэкаў у плэйлісце.
- */
 function updatePlaylistDetailsAndCover_(addedCount, totalCount) {
-    const playlistId = AI_CONFIG.SPOTIFY_PLAYLIST_ID;
-    const coverImageBase64 = generatePlaylistCover_();
+    Logger.log('Спроба згенераваць і апрацаваць новую вокладку...');
+    let coverImageBase64 = null;
+    let tempFile = null;
+    
+    try {
+        // Генерацыя вокладкі
+        coverImageBase64 = generatePlaylistCover_();
+        
+        if (coverImageBase64) {
+            // Апрацоўка памеру (Resize) праз знешні сэрвіс (для гарантыі < 256KB)
+            const imageBlob = Utilities.newBlob(Utilities.base64Decode(coverImageBase64), 'image/jpeg', 'temp_cover.jpg');
+            tempFile = DriveApp.createFile(imageBlob);
+            tempFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+            
+            const imageUrlForResize = `https://drive.google.com/uc?id=${tempFile.getId()}`;
+            const resizeServiceUrl = `https://images.weserv.nl/?url=${encodeURIComponent(imageUrlForResize)}&w=600&h=600&q=90&output=jpg`;
+            
+            const resizedResponse = UrlFetchApp.fetch(resizeServiceUrl, { 'muteHttpExceptions': true });
+            
+            if (resizedResponse.getResponseCode() === 200) {
+                coverImageBase64 = Utilities.base64Encode(resizedResponse.getBlob().getBytes());
+                Logger.log(`✅ Малюнак паспяхова паменшаны.`);
+            }
+        }
+    } catch (e) {
+        Logger.log(`⚠️ Памылка апрацоўкі вокладкі: ${e}`);
+    } finally {
+        if (tempFile) {
+            try { tempFile.setTrashed(true); } catch (e) {}
+        }
+    }
 
     const playlistName = AI_CONFIG.PLAYLIST_NAME_TEMPLATE.replace('{date}', new Date().toLocaleDateString('be-BY'));
     const formattedDateTime = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'dd MMMM yyyy, HH:mm');
 
     const payload = {
       name: playlistName,
-      description: `Апошняе абнаўленне: ${formattedDateTime}. Дададзена: ${addedCount}. Агулам: ${totalCount}.`
+      description: `Апошняе абнаўленне: ${formattedDateTime}. Дададзена: ${addedCount} новых. Агулам: ${totalCount}.`
     };
 
-    Logger.log(`Абнаўленне назвы і апісання праз прамы API-запыт...`);
+    Logger.log(`Абнаўленне назвы і апісання...`);
     try {
-        SpotifyRequest.put(`${API_BASE_URL}/playlists/${playlistId}`, payload);
-        Logger.log('✅ Назва і апісанне паспяхова абноўлены.');
-    } catch (e) {
-        Logger.log(`⚠️ Памылка падчас абнаўлення дэталяў плэйліста: ${e.toString()}`);
-    }
+        SpotifyRequest.put(`${API_BASE_URL}/playlists/${AI_CONFIG.SPOTIFY_PLAYLIST_ID}`, payload);
+        Logger.log('✅ Назва і апісанне абноўлены.');
+    } catch (e) { Logger.log(`⚠️ Памылка метададзеных: ${e}`); }
 
     if (coverImageBase64) {
-        Logger.log('Загрузка новай вокладкі...');
+        Logger.log('Загрузка новай вокладкі ў Spotify...');
         try {
-            SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${playlistId}/images`, coverImageBase64);
+            SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${AI_CONFIG.SPOTIFY_PLAYLIST_ID}/images`, coverImageBase64);
             Logger.log('✅ Вокладка паспяхова загружана.');
-        } catch (e) {
-            Logger.log(`⚠️ Памылка падчас загрузкі вокладкі: ${e.toString()}`);
-        }
+        } catch (e) { Logger.log(`⚠️ Памылка загрузкі вокладкі: ${e}`); }
     }
 }
 
-/**
- * Правярае памер плэйліста і абразае яго, калі ён перавышае ліміт `MAX_PLAYLIST_SIZE`.
- */
 function trimPlaylistIfNeeded_() {
-  const playlistId = AI_CONFIG.SPOTIFY_PLAYLIST_ID;
-  const currentTracks = Source.getPlaylistTracks('', playlistId);
+  Logger.log('Праверка памеру плэйліста...');
+  const currentTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
   
   if (currentTracks.length > AI_CONFIG.MAX_PLAYLIST_SIZE) {
-    const tracksToRemoveCount = currentTracks.length - AI_CONFIG.MAX_PLAYLIST_SIZE;
-    Logger.log(`Плэйліст перавышае ліміт (${AI_CONFIG.MAX_PLAYLIST_SIZE}). Выдаленне ${tracksToRemoveCount} самых старых трэкаў...`);
-    
     const trimmedTracks = currentTracks.slice(0, AI_CONFIG.MAX_PLAYLIST_SIZE);
-    
     Playlist.saveWithReplace({
-      id: playlistId,
+      id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
       tracks: trimmedTracks
     });
-    Logger.log('Плэйліст паспяхова абрэзаны.');
+    Logger.log(`✅ Плэйліст абрэзаны да ${AI_CONFIG.MAX_PLAYLIST_SIZE} трэкаў.`);
+  } else {
+    Logger.log('Абразанне не патрабуецца.');
   }
 }
-
 
 // ===============================================================
 //                     СТВАРЭННЕ ПРОМПТАЎ ДЛЯ AI
 // ===============================================================
 
 function prepareTracksForPrompt_() {
-  Logger.log('Атрыманне трэкаў з кэша Goofy (SavedTracks.json)...');
+  Logger.log('Чытанне SavedTracks.json...');
   const allTracks = Cache.read('SavedTracks.json');
   if (!allTracks || allTracks.length === 0) {
-    Logger.log('ПАМЫЛКА: Не атрымалася прачытаць трэкі. Пераканайцеся, што Goofy наладжаны і ўжо працаваў.');
+    Logger.log('ПАМЫЛКА: SavedTracks.json пусты. Праверце наладу бібліятэкі Goofy.');
     return null;
   }
   const randomTracks = Selector.sliceRandom(allTracks, AI_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI);
-  Logger.log(`Абрана ${randomTracks.length} выпадковых трэкаў для аналізу.`);
   return JSON.stringify(randomTracks);
 }
 
 function createTrackRecommendationPrompt_(tracksJsonString) {
-  const today = new Date();
-  const formattedDate = today.toLocaleDateString('be-BY', { year: 'numeric', month: 'long', day: 'numeric' });
-
+  const today = new Date().toLocaleDateString('be-BY', { year: 'numeric', month: 'long', day: 'numeric' });
   return `
-[Роля]: Ты — музычны куратар і даследчык, які спецыялізуецца на выяўленні нечаканых сувязяў паміж рознымі музычнымі сцэнамі, жанрамі і эпохамі.
-[Кантэкст]: Я прадастаўляю табе выпадковую выбарку трэкаў з маёй музычнай бібліятэкі. Твая мэта — прааналізаваць мае густы і стварыць дакладны плэйліст для адкрыцця новай музыкі.
-[Часавы кантэкст]: Сённяшняя дата: ${formattedDate}. Выкарыстай гэта, каб вызначыць бягучы сезон і настрой (напр., позняе лета, восеньская меланхолія) і дазволь гэтаму ўплываць на частку тваіх рэкамендацый.
-[Уваходныя даныя]: Спіс трэкаў у фармаце JSON.
-\`\`\`json
-${tracksJsonString}
-\`\`\`
-[Задача]:
-1. Прааналізуй уваходныя даныя, каб вызначыць асноўныя жанры, настрой, эпохі і характэрныя рысы майго музычнага густу.
-2. На аснове гэтага аналізу і часавага кантэксту згенеруй спіс з 200 музычных трэкаў для адкрыцця новай музыкі.
-[Абмежаванні і правілы]:
-- **Без дублікатаў:** НЕ ўключай трэкі, якія ўжо ёсць ва ўваходных даных.
-- **Прыярытэт навізны:** Прапаноўвай выканаўцаў, якіх няма ў зыходным спісе.
-- **Разнастайнасць:** ~70% рэкамендацый павінны дакладна адпавядаць густам, ~30% — быць смелым "крокам убок" (сумежныя жанры, іншыя эпохі, геаграфія).
-- **Жанравая класіка:** Уключы ~5 знакавых шлягераў з дамінуючага жанру.
-- **Лакальная сцэна:** Каля 30% выканаўцаў павінны быць з Беларусі.
-- **Моўны фільтр:** Пазбягай песень на рускай мове, і **НІКОЛІ** не дадавай рускамоўных песень расейскіх выканаўцаў.
-[Фармат вываду]:
-- Адказ павінен быць ВЫКЛЮЧНА валідным JSON-масівам. Кожны элемент — радок у фармаце "Artist Name - Track Title".
-- Не дадавай ніякіх тлумачэнняў, каментароў або markdown.
-- **ВЕЛЬМІ ВАЖНА ДЛЯ ПОШУКУ:** Усе назвы павінны быць у ніжнім рэгістры. Выдалі ўсе спецсімвалы, акрамя дэфіса. Не дадавай метаданыя ('remastered', 'live').
-[Прыклад ідэальнага вываду]:
-["the cure - a forest", "joy division - disorder", "molchat doma - sudno borys ryzhyi", "lavon volski - pavietrany shar"]
+[Роля]: Ты — музычны куратар і даследчык.
+[Кантэкст]: Сёння ${today}. Прааналізуй мае густы з дадзеных ніжэй.
+[Уваходныя даныя]: \`\`\`json ${tracksJsonString} \`\`\`
+[Задача]: Згенеруй спіс з 200 трэкаў для адкрыцця новай музыкі.
+[Правілы]:
+- 70% адпаведнасць густам, 30% эксперыменты (сумежныя жанры, іншыя краіны).
+- 30% лакальная сцэна (Беларусь), калі гэта дарэчы ў кантэксце жанраў.
+- Выключыць: Рускамоўныя песні расейскіх выканаўцаў.
+[Фармат]: Вярні ТОЛЬКІ JSON-масіў радкоў у фармаце "Artist - Track". Ніякіх тлумачэнняў.
+[Прыклад]: ["Molchat Doma - Sudno", "Akute - Zorka", "The Cure - A Forest"]
 `;
 }
 
-// ===============================================================
-//                     ГЕНЕРАЦЫЯ ВОКЛАДКІ
-// ===============================================================
-
 /**
- * Спрабуе згенераваць вокладку, паслядоўна выкарыстоўваючы мадэлі з `modelFallbackChain` 
- * для максімальнай надзейнасці.
- * @return {string | null} Малюнак у фармаце Base64 або null, калі ўсе спробы няўдалыя.
+ * [ФІНАЛЬНАЯ ВЕРСІЯ] Генерацыя вокладкі з прыярытэтам якасці (FLUX DEV).
  */
 function generatePlaylistCover_() {
-  if (!AI_CONFIG.IMAGE_GENERATION.ENABLED) {
-    Logger.log('Генерацыя вокладкі выключана ў наладах.');
-    return null;
-  }
-  const tracksForPrompt = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
-  if (!tracksForPrompt || tracksForPrompt.length === 0) {
-    Logger.log('Плэйліст пусты, генерацыя вокладкі прапушчана.');
-    return null;
-  }
+  if (!AI_CONFIG.IMAGE_GENERATION.ENABLED) return null;
 
-  const imagePrompt = createImagePromptFromTracks_(tracksForPrompt);
-  if (!imagePrompt) {
-    Logger.log('Не атрымалася стварыць промпт для малюнка.');
-    return null;
-  }
-  
-  // Ланцужок запасных мадэляў для надзейнай генерацыі
-  const modelFallbackChain = [
-    AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.FLUX_SCHNELL,
-    AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.STABLE_DIFFUSION_3,
-    AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.DEFAULT_SDXL
-  ];
+  try {
+    const tracksForPrompt = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
+    if (!tracksForPrompt || tracksForPrompt.length === 0) return null;
 
-  for (const modelId of modelFallbackChain) {
-    const imageBase64 = callHuggingFaceApiWithModel_(imagePrompt, modelId);
-    if (imageBase64) {
-      Logger.log(`✅ Малюнак паспяхова згенераваны з дапамогай "${modelId}".`);
-      return imageBase64; // Вяртаем вынік першай паспяховай генерацыі
+    const imagePrompt = createImagePromptFromTracks_(tracksForPrompt);
+    if (!imagePrompt) return null;
+    
+    // Ланцужок мадэляў: Якасць -> Хуткасць -> Альтэрнатыва -> Класіка
+    const modelFallbackChain = [
+      AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.FLUX_DEV,     
+      AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.FLUX_SCHNELL, 
+      AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.SD3_MEDIUM,   
+      AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.SDXL_BASE     
+    ];
+
+    let imageBase64 = null;
+
+    for (const modelId of modelFallbackChain) {
+      if (!modelId) continue;
+      Logger.log(`🚀 Спроба генерацыі праз: "${modelId}"...`);
+      imageBase64 = callHuggingFaceApiWithModel_(imagePrompt, modelId);
+      if (imageBase64) {
+        Logger.log(`✅ ПОСПЕХ! Малюнак атрыманы ад "${modelId}".`);
+        return imageBase64; 
+      } else {
+        Logger.log(`⚠️ Мадэль "${modelId}" не адказала. Пераход да наступнай...`);
+      }
     }
+    return null;
+  } catch (error) {
+    Logger.log(`⚠️ Крытычная памылка генерацыі: ${error.toString()}`);
+    return null;
   }
-  
-  Logger.log('❌ Усе мадэлі з ланцужка не змаглі згенераваць малюнак.');
-  return null;
 }
 
 /**
- * Стварае тэкставы промпт для генератара малюнкаў на аснове спісу трэкаў.
- * @param {Array<Object>} tracks Масіў трэкаў для аналізу.
- * @return {string | null} Гатовы промпт або null.
+ * [АБНОЎЛЕНА] Стварае промпт для малюнка з выкарыстаннем цыкла запасных мадэляў Gemini.
  */
 function createImagePromptFromTracks_(tracks) {
   const trackSample = Selector.sliceRandom(tracks, 50); 
   const trackListString = trackSample.map(t => `${t.artists[0].name} - ${t.name}`).join('\n');
+
   const promptForPrompt = `
-[Role]: You are a professional art director creating prompts for AI image generators.
-[Context]: Analyze the combined mood of these music tracks to create a SINGLE, detailed, technically precise prompt for a square album cover.
-[Input Data]:
+[Role]: Visionary art director.
+[Input]: List of music tracks.
 ${trackListString}
+[Task]: Generate a SINGLE, highly-detailed prompt for a square album cover based on the mood of these tracks.
 [Rules]:
-- Include keywords for high quality: "hyperrealistic", "8k resolution", "intricate details".
-- Suggest a specific visual style: "cinematic still", "lomography photo", "double exposure", "surrealism".
-- Describe lighting in detail: "cinematic lighting", "volumetric light", "moody".
-- Focus on abstract emotions, not literal scenes.
-- The prompt must be a single paragraph under 120 words and in English.
-[Output Format]: ONLY the text of the prompt itself. No explanations or quotes.
+1. Metaphorical, not literal.
+2. Define Artistic Style (e.g., Surrealism, Glitch Art, Oil Painting) and Color Palette.
+3. Add technical keywords (8k, cinematic lighting, masterpiece).
+[Constraints]: Output ONLY the prompt text. Length < 140 words.
 `;
+
   try {
     const geminiApiKey = getGeminiApiKey_();
-    // Выкарыстоўваем хуткую мадэль для генерацыі промпта
-    const imagePromptText = callGeminiApi_(geminiApiKey, 'gemini-2.5-flash', promptForPrompt); 
-    return imagePromptText ? imagePromptText.replace(/[`"']/g, '').trim() : null;
-  } catch (e) {
-    Logger.log(`Не атрымалася стварыць промпт для малюнка: ${e}`);
-    return null;
-  }
+    let rawImagePrompt = null;
+    
+    // Выкарыстоўваем той жа спіс прыярытэтаў мадэляў
+    for (const modelName of AI_CONFIG.GEMINI_MODELS_PRIORITY) {
+      Logger.log(`🎨 Генерацыя промпта для вокладкі праз: "${modelName}"...`);
+      rawImagePrompt = callGeminiApi_(geminiApiKey, modelName, promptForPrompt);
+      if (rawImagePrompt) break; // Поспех
+      Utilities.sleep(1000);
+    }
+
+    if (!rawImagePrompt) return null;
+
+    // Ачыстка ад магчымага JSON-фарматавання
+    try {
+      const cleanString = rawImagePrompt.replace(/```json/g, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(cleanString);
+      if (parsed && parsed.prompt) return parsed.prompt;
+    } catch (e) {}
+    
+    return rawImagePrompt.replace(/`/g, '').trim();
+
+  } catch (e) { return null; }
 }
 
 // ===============================================================
 //                       ДАПАМОЖНЫЯ ФУНКЦЫІ
 // ===============================================================
 
-/**
- * Выклікае Inference API Hugging Face. Выкарыстоўвае абноўлены эндпойнт `router.huggingface.co`
- * для сумяшчальнасці. Рэалізуе логіку паўтору пры атрыманні кода 503, які азначае 
- * 'халодны старт' мадэлі.
- * @param {string} imagePrompt - Тэкставы запыт для генерацыі малюнка.
- * @param {string} modelId - ID мадэлі на Hugging Face.
- * @return {string | null} - Малюнак у фармаце Base64 або null у выпадку памылкі.
- */
-function callHuggingFaceApiWithModel_(imagePrompt, modelId) {
-  const apiKey = PropertiesService.getScriptProperties().getProperty('HUGGINGFACE_API_KEY');
-  if (!apiKey) {
-    Logger.log('Памылка: API-ключ для Hugging Face (HUGGINGFACE_API_KEY) не знойдзены.');
-    return null;
-  }
-
-  // Выкарыстанне новага, абавязковага URL для Hugging Face Inference API
-  const url = `https://router.huggingface.co/hf-inference/models/${modelId}`;
-
-  const payload = { 
-    "inputs": imagePrompt, 
-    "parameters": {} 
-  };
-  
-  if (modelId.includes('FLUX.1-schnell')) {
-    payload.parameters.num_inference_steps = 8;
-    payload.parameters.guidance_scale = 0.0;
-  }
-
-  const options = {
-    'method': 'post',
-    'headers': {
-      'Authorization': 'Bearer ' + apiKey,
-      'Content-Type': 'application/json'
-    },
-    'payload': JSON.stringify(payload),
-    'muteHttpExceptions': true
-  };
-
-  try {
-    Logger.log(`Адпраўка запыту на генерацыю ў мадэль "${modelId}"...`);
-    let response = UrlFetchApp.fetch(url, options);
-    let responseCode = response.getResponseCode();
-
-    // Аўтаматычны паўтор, калі мадэль загружаецца ("cold start")
-    if (responseCode === 503) {
-      Logger.log('Мадэль на Hugging Face загружаецца. Чакаем 20 секунд і спрабуем яшчэ раз...');
-      Utilities.sleep(20000); 
-      response = UrlFetchApp.fetch(url, options);
-      responseCode = response.getResponseCode();
-    }
-
-    if (responseCode === 200) {
-      const imageBlob = response.getBlob();
-      return Utilities.base64Encode(imageBlob.getBytes());
-    } else {
-      const responseBody = response.getContentText();
-      Logger.log(`Памылка выкліку Hugging Face API для "${modelId}". Код: ${responseCode}. Адказ: ${responseBody}`);
-      return null;
-    }
-  } catch (error) {
-    Logger.log(`Выключэнне падчас выкліку Hugging Face API для "${modelId}": ${error}`);
-    return null;
-  }
+function normalizeTrackQuery_(rawQuery) {
+  if (typeof rawQuery !== 'string') return "";
+  let q = rawQuery.toLowerCase();
+  // Спрошчаная транслітарацыя і ачыстка (пакіньце вашу поўную табліцу, калі яна ёсць)
+  q = q.replace(/\s*[\(\[].*?[\)\]]\s*/g, ' ').replace(/ - /g, ' ');
+  q = q.replace(/[^a-z0-9\s\u0400-\u04FF]/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  return q;
 }
 
-/**
- * Нармалізуе радок з назвай трэка для максімальнай дакладнасці пошуку.
- * Уключае транслітарацыю кірыліцы і апрацоўку дыякрытычных знакаў (напр., 'é' -> 'e').
- * @param {string} rawQuery - Сыры радок ад AI.
- * @return {string} Ачышчаны радок, гатовы для пошуку.
- */
-function normalizeTrackQuery_(rawQuery) {
-  if (typeof rawQuery !== 'string' || rawQuery.length === 0) return "";
-  const TRANSLIT_TABLE = { 'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'i','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ъ':'','ы':'y','ь':'','э':'e','ю':'iu','я':'ia','і':'i','ў':'u','ґ':'g','є':'ie','ї':'i' };
-  const DIACRITICS_MAP = { 'ä':'a', 'á':'a', 'à':'a', 'â':'a', 'ã':'a', 'å':'a','ç':'c', 'ć':'c', 'č':'c','é':'e', 'è':'e', 'ê':'e', 'ë':'e','í':'i', 'ì':'i', 'î':'i', 'ï':'i','ł':'l','ñ':'n', 'ń':'n','ö':'o', 'ó':'o', 'ò':'o', 'ô':'o', 'õ':'o', 'ø':'o','š':'s', 'ś':'s','ü':'u', 'ú':'u', 'ù':'u', 'û':'u','ý':'y','ž':'z', 'ź':'z', 'ż':'z' };
-
-  let cleanedQuery = rawQuery.toLowerCase();
-  cleanedQuery = cleanedQuery.split('').map(char => TRANSLIT_TABLE[char] || DIACRITICS_MAP[char] || char).join('');
-  cleanedQuery = cleanedQuery.replace(/\s*[\(\[].*?[\)\]]\s*/g, ' ').trim();
-  const noiseWords = ['remastered', 'remaster', 'live', 'radio edit', 'album version', 'feat', 'ft'];
-  noiseWords.forEach(word => { cleanedQuery = cleanedQuery.replace(new RegExp(`\\b${word}\\b`, 'gi'), ''); });
-  cleanedQuery = cleanedQuery.replace(/^the\s+/, '');
-  cleanedQuery = cleanedQuery.replace(/[^a-z0-9\s-]/g, ' ').replace(/\s{2,}/g, ' ').trim();
-  return cleanedQuery;
+function reverseTransliterate_(translitQuery) {
+  // Слоўнік для аднаўлення беларускай/кірылічнай назвы
+  const REVERSE_TABLE = {
+    'shch':'шч','kh':'х','zh':'ж','ch':'ч','sh':'ш',
+    'ya':'я','yu':'ю','ts':'ц','ia':'я','iu':'ю',
+    'a':'а','b':'б','v':'в','g':'г','d':'д','e':'е','z':'з',
+    'i':'і','k':'к','l':'л','m':'м','n':'н','o':'о','p':'п',
+    'r':'р','s':'с','t':'т','u':'у','f':'ф','y':'ы'
+  };
+  
+  // Калі ў запыце ўжо ёсць кірыліца або няма характэрных лацінскіх спалучэнняў, вяртаем null
+  if (/[а-яёіў]/.test(translitQuery)) return null;
+  
+  let cyr = translitQuery;
+  // Спачатку замяняем доўгія спалучэнні (shch, kh...)
+  for (const [lat, c] of Object.entries(REVERSE_TABLE)) {
+     // Выкарыстоўваем глабальны пошук
+     cyr = cyr.split(lat).join(c); 
+  }
+  return (cyr !== translitQuery && cyr.length > 2) ? cyr : null;
 }
 
 function parseAiResponse_(rawResponse) {
-  let cleanedJsonString = rawResponse.replace(/^\s*[\*\-]\s*/gm, '').replace(/^```json\s*/, '').replace(/\s*```$/, '').replace(/,\s*\]/g, ']');
+  let cleaned = rawResponse.replace(/^\s*[\*\-]\s*/gm, '').replace(/^```json\s*/, '').replace(/\s*```$/, '').replace(/,\s*\]/g, ']');
   try {
-    let tracks = JSON.parse(cleanedJsonString);
-    if (!Array.isArray(tracks)) throw new Error("Адказ AI не з'яўляецца масівам.");
-    const validTracks = tracks.filter(item => typeof item === 'string' && item.trim().length > 0);
-    if (validTracks.length !== tracks.length) {
-      Logger.log(`Папярэджанне: ${tracks.length - validTracks.length} несапраўдных элементаў было выдалена з адказу AI.`);
-    }
-    return validTracks;
-  } catch (e) {
-    Logger.log(`КРЫТЫЧНАЯ памылка парсінгу: ${e.message}\nСыры адказ: ${rawResponse}`);
-    return [];
-  }
+    let tracks = JSON.parse(cleaned);
+    if (Array.isArray(tracks)) return tracks.filter(item => typeof item === 'string');
+  } catch (e) { return []; }
+  return [];
 }
 
 function getGeminiApiKey_() {
-  const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-  if (!apiKey) throw new Error("API-ключ 'GEMINI_API_KEY' не знойдзены ва ўласцівасцях скрыпта.");
-  return apiKey;
+  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  if (!key) throw new Error('Уласцівасць скрыпта GEMINI_API_KEY не зададзена!');
+  return key;
 }
 
 function callGeminiApi_(apiKey, model, prompt) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const requestPayload = {
-     "contents": [{"parts": [{"text": prompt}]}],
-     "generationConfig": {
-       "temperature": 1.2,
-       "responseMimeType": "application/json"
-     },
-     "safetySettings": [
-        { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
-        { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
-        { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
-        { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
-      ]
-   };
-  if (model.includes('1.5')) {
-      requestPayload.generationConfig.responseSchema = {"type": "array", "items": { "type": "string" }};
-  }
-  const options = { 'method': 'post', 'contentType': 'application/json', 'payload': JSON.stringify(requestPayload), 'muteHttpExceptions': true };
-
-  const response = UrlFetchApp.fetch(url, options);
-  const responseCode = response.getResponseCode();
-  const responseBody = response.getContentText();
-  if (responseCode === 200) {
-    const jsonResponse = JSON.parse(responseBody);
-    if (jsonResponse.candidates && jsonResponse.candidates[0]?.content?.parts[0]?.text) {
-        return jsonResponse.candidates[0].content.parts[0].text;
+  const payload = { 
+      "contents": [{"parts": [{"text": prompt}]}], 
+      "generationConfig": {"responseMimeType": "application/json"} 
+  };
+  
+  try {
+    const response = UrlFetchApp.fetch(url, {
+        'method': 'post', 
+        'contentType': 'application/json', 
+        'payload': JSON.stringify(payload), 
+        'muteHttpExceptions': true
+    });
+    
+    if (response.getResponseCode() === 200) {
+      const json = JSON.parse(response.getContentText());
+      return json.candidates?.[0]?.content?.parts?.[0]?.text || null;
     }
+  } catch (e) {
+    Logger.log(`Памылка Gemini API (${model}): ${e.toString()}`);
   }
-  Logger.log(`Памылка выкліку Gemini API. Код: ${responseCode}. Адказ: ${responseBody}`);
   return null;
 }
 
-// ===============================================================
-//                  АПЦЫЯНАЛЬНАЯ ФУНКЦЫЯ АЧЫСТКІ
-// ===============================================================
+/**
+ * [ФІНАЛЬНАЯ ВЕРСІЯ] Універсальны выклік API Hugging Face з наладамі пад мадэлі.
+ */
+function callHuggingFaceApiWithModel_(imagePrompt, modelId) {
+  const apiKey = PropertiesService.getScriptProperties().getProperty('HUGGINGFACE_API_KEY');
+  if (!apiKey) {
+      Logger.log('Уласцівасць HUGGINGFACE_API_KEY не зададзена!');
+      return null;
+  }
 
+  const url = `https://router.huggingface.co/hf-inference/models/${modelId}`;
+  const payload = { "inputs": imagePrompt, "parameters": {} };
+  
+  // Спецыфічныя налады пад розныя мадэлі
+  if (modelId.includes('FLUX.1-schnell')) {
+    payload.parameters.num_inference_steps = 4; 
+    payload.parameters.guidance_scale = 0.0;
+  } else if (modelId.includes('FLUX.1-dev')) {
+    payload.parameters.num_inference_steps = 25; 
+    payload.parameters.guidance_scale = 3.5;
+    payload.parameters.width = 1024; payload.parameters.height = 1024;
+  } else if (modelId.includes('stable-diffusion-3')) {
+    payload.parameters.num_inference_steps = 28; 
+    payload.parameters.guidance_scale = 7.0;
+    payload.parameters.width = 1024; payload.parameters.height = 1024;
+  } else {
+    payload.parameters.width = 1024; payload.parameters.height = 1024;
+  }
+
+  try {
+    let response = UrlFetchApp.fetch(url, {
+      'method': 'post', 'headers': {'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json'},
+      'payload': JSON.stringify(payload), 'muteHttpExceptions': true
+    });
+
+    // Апрацоўка "халоднага старту" (мадэль загружаецца на сэрверы)
+    if (response.getResponseCode() === 503) {
+      Logger.log(`⏳ Мадэль "${modelId}" загружаецца... чакаем 20с.`);
+      Utilities.sleep(20000); 
+      response = UrlFetchApp.fetch(url, {
+        'method': 'post', 'headers': {'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json'},
+        'payload': JSON.stringify(payload), 'muteHttpExceptions': true
+      });
+    }
+
+    if (response.getResponseCode() === 200) {
+      return Utilities.base64Encode(response.getBlob().getBytes());
+    } else {
+      Logger.log(`❌ Памылка HF API (${modelId}): ${response.getContentText()}`);
+      return null;
+    }
+  } catch (error) { return null; }
+}
+
+/**
+ * Функцыя перыядычнай ачысткі плэйліста ад праслуханых трэкаў.
+ */
 function cleanUpPlaylist() {
   const playlistId = AI_CONFIG.SPOTIFY_PLAYLIST_ID;
-  Logger.log(`Задача ачысткі: Пачатак для плэйліста ID: ${playlistId}`);
+  Logger.log(`Задача ачысткі: Пачатак...`);
+  
   try {
     const playlistTracks = Source.getPlaylistTracks('', playlistId);
-    if (playlistTracks.length === 0) {
-      Logger.log(`Плэйліст пусты. Завяршэнне.`);
-      return;
-    }
-    const initialTrackCount = playlistTracks.length;
+    if (!playlistTracks || playlistTracks.length === 0) return;
 
-    Logger.log(`Атрыманне гісторыі праслухоўванняў за апошнія ${AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS} дзён...`);
-    let recentTracksHistory = RecentTracks.get();
-    Filter.rangeDateRel(recentTracksHistory, AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS, 0);
+    Logger.log(`Атрыманне гісторыі за ${AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS} дзён...`);
+    let recentHistory = RecentTracks.get();
+    Filter.rangeDateRel(recentHistory, AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS, 0);
     
-    if (recentTracksHistory.length === 0) {
-        Logger.log(`Не знойдзена праслуханых трэкаў за зададзены перыяд. Змены не патрабуюцца.`);
+    if (recentHistory.length === 0) {
+        Logger.log(`Няма праслуханых трэкаў за гэты перыяд.`);
         return;
     }
 
-    const recentTrackIds = new Set(recentTracksHistory.map(track => track.id));
-    const tracksToKeep = playlistTracks.filter(track => !recentTrackIds.has(track.id));
-    const tracksToRemoveCount = initialTrackCount - tracksToKeep.length;
-
-    if (tracksToRemoveCount > 0) {
-      Logger.log(`${tracksToRemoveCount} праслуханых трэкаў будзе выдалена. Абнаўленне плэйліста...`);
+    const recentIds = new Set(recentHistory.map(t => t.id));
+    const tracksToKeep = playlistTracks.filter(t => !recentIds.has(t.id));
+    
+    if (tracksToKeep.length < playlistTracks.length) {
+      const removedCount = playlistTracks.length - tracksToKeep.length;
+      Logger.log(`Выдаленне ${removedCount} праслуханых трэкаў...`);
       Playlist.saveWithReplace({ id: playlistId, tracks: tracksToKeep });
-      Logger.log(`✅ Задача ачысткі: Плэйліст паспяхова абноўлены.`);
+      Logger.log(`✅ Плэйліст ачышчаны.`);
     } else {
-      Logger.log(`Супадзенняў не знойдзена. Змены не патрабуюцца.`);
+      Logger.log(`Супадзенняў не знойдзена.`);
     }
-  } catch (error) {
-    Logger.log(`ПАМЫЛКА задачы ачысткі: ${error.toString()}`);
+  } catch (e) {
+    Logger.log(`ПАМЫЛКА ачысткі: ${e}`);
   }
 }
