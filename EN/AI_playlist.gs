@@ -1,10 +1,13 @@
 /**
  * @OnlyCurrentDoc
- * Main file for working with the Gemini AI to create Spotify playlists.
- * This script analyzes your library, gets AI recommendations, and generates custom cover art.
- *
- * Version: 4.0 (Robust version with modular playlist updates, fallback chain for cover art generation,
- * and improved track normalization.)
+ * Main script for creating Spotify playlists using Gemini AI.
+ * VERSION: "Golden Release" (Multi-Model Gemini + FLUX/SD3 Cover Art)
+ * 
+ * Features:
+ * 1. Analyzes your library (SavedTracks.json).
+ * 2. Generates recommendations via Google Gemini (with fallback models).
+ * 3. Searches for tracks on Spotify (supports Latin & Cyrillic queries).
+ * 4. Generates AI cover art via Hugging Face (FLUX/SD3).
  */
 
 // ===============================================================
@@ -13,149 +16,226 @@
 
 const AI_CONFIG = {
   // === REQUIRED SETTINGS ===
+  
+  // The ID of the Spotify playlist to update.
+  // You can get this from the playlist URL: open.spotify.com/playlist/YOUR_ID
+  SPOTIFY_PLAYLIST_ID: 'INSERT_YOUR_PLAYLIST_ID_HERE', 
 
-  // The ID of the Spotify playlist that will be updated.
-  // Example: '78uFpogH6uDyrEbFxzfp2L'
-  SPOTIFY_PLAYLIST_ID: 'YOUR_SPOTIFY_PLAYLIST_ID_HERE', // <<<=== PASTE YOUR PLAYLIST ID HERE
+  // === GEMINI SETTINGS (MULTI-MODEL FALLBACK) ===
+  // Priority list of models. If the first one is overloaded (503), 
+  // the script automatically tries the next one.
+  GEMINI_MODELS_PRIORITY: [
+    'gemini-2.5-pro',          // 1. "The Brain": Best quality & erudition
+    'gemini-flash-latest',     // 2. "Speed": Current Flash version (Reliable fallback)
+    'gemini-flash-lite-latest' // 3. "Light": Most economical (Last resort)
+  ],
 
-  // === AI & PLAYLIST SETTINGS ===
+  // Number of tracks to analyze from your library (to avoid token limits)
+  TRACK_SAMPLE_SIZE_FOR_AI: 500,
 
-  // The Gemini model to use for generating track recommendations.
-  GEMINI_MODEL: 'gemini-2.5-pro',
+  // Maximum playlist size before removing old tracks.
+  MAX_PLAYLIST_SIZE: 500, 
 
-  // The number of random tracks from your library to be analyzed by the AI.
-  TRACK_SAMPLE_SIZE_FOR_AI: 700,
-
-  // The maximum size of the final playlist.
-  MAX_PLAYLIST_SIZE: 500,
-
-  // The template for the playlist name. {date} will be replaced with the current date.
-  PLAYLIST_NAME_TEMPLATE: 'AI Playlist from {date}',
-
-  // === COVER ART GENERATION SETTINGS (VIA HUGGING FACE) ===
-
+  // === COVER ART SETTINGS (VIA HUGGING FACE) ===
   IMAGE_GENERATION: {
-    ENABLED: true,
-    // [RECOMMENDED MODELS] These models have been tested and provide good results.
-    AVAILABLE_MODELS: {
-      FLUX_SCHNELL: 'black-forest-labs/FLUX.1-schnell', // Best balance of speed and quality
-      STABLE_DIFFUSION_3: 'stabilityai/stable-diffusion-3-medium-diffusers', // Highest quality
-      DEFAULT_SDXL: 'stabilityai/stable-diffusion-xl-base-1.0' // Reliable classic
-    }
+      ENABLED: true,
+      
+      // "Golden List" of verified models. The script tries them sequentially.
+      AVAILABLE_MODELS: {
+        // 1. Top Quality & Detail (~10-15s). Requires license agreement on HF.
+        FLUX_DEV: 'black-forest-labs/FLUX.1-dev', 
+        
+        // 2. Top Speed (~2-3s).
+        FLUX_SCHNELL: 'black-forest-labs/FLUX.1-schnell', 
+        
+        // 3. Alternative Artistic Style (Stable Diffusion 3).
+        SD3_MEDIUM: 'stabilityai/stable-diffusion-3-medium-diffusers',
+        
+        // 4. Reliable Classic (Works without extra licenses).
+        SDXL_BASE: 'stabilityai/stable-diffusion-xl-base-1.0'
+      }
   },
 
-  // === PLAYLIST CLEANUP SETTINGS ===
-
-  // The period (in days) for which listened tracks will be removed from the playlist.
-  CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS: 60,
+  // Playlist name template. {date} is replaced with the current date.
+  PLAYLIST_NAME_TEMPLATE: 'AI Playlist from {date}',
+  
+  // Cleanup settings: remove tracks listened to more than X days ago.
+  CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS: 60
 };
 
 // ===============================================================
-//                MAIN PLAYLIST GENERATION FUNCTION
+//                MAIN GENERATION FUNCTION
 // ===============================================================
 
 /**
- * The main function to generate and update a Spotify playlist using Gemini AI.
+ * Runs the full cycle: Analysis -> Generation -> Search -> Update -> Cover Art.
  */
 function generateAndCreateSpotifyPlaylist() {
   try {
-    Logger.log('Starting the AI playlist creation process...');
+    Logger.log('Starting AI playlist creation process...');
     const geminiApiKey = getGeminiApiKey_();
+    
+    // 1. Prepare Data
     const randomTracksJsonString = prepareTracksForPrompt_();
-    if (!randomTracksJsonString) return;
+    if (!randomTracksJsonString) return; 
 
-    Logger.log('Creating the prompt text for Gemini AI...');
+    Logger.log('Creating prompt for Gemini AI...');
     const promptText = createTrackRecommendationPrompt_(randomTracksJsonString);
 
-    Logger.log(`Calling the ${AI_CONFIG.GEMINI_MODEL} model...`);
-    const aiResponseJsonString = callGeminiApi_(geminiApiKey, AI_CONFIG.GEMINI_MODEL, promptText);
-    if (!aiResponseJsonString) {
-      throw new Error('Received an empty or invalid response from the Gemini API.');
+    // 2. AI Call with Fallback Loop
+    let aiResponseJsonString = null;
+    let usedModel = '';
+
+    for (const modelName of AI_CONFIG.GEMINI_MODELS_PRIORITY) {
+      Logger.log(`🔄 Attempting model: "${modelName}"...`);
+      aiResponseJsonString = callGeminiApi_(geminiApiKey, modelName, promptText);
+      
+      if (aiResponseJsonString) {
+        Logger.log(`✅ Model "${modelName}" responded successfully.`);
+        usedModel = modelName;
+        break; 
+      } else {
+        Logger.log(`⚠️ Model "${modelName}" failed. Switching to next...`);
+        Utilities.sleep(1000); // Pause before retry
+      }
     }
 
+    if (!aiResponseJsonString) throw new Error('❌ All Gemini models are unavailable.');
+
+    // 3. Process Response
+    Logger.log('Parsing AI response...');
     const tracksToSearch = parseAiResponse_(aiResponseJsonString);
+    Logger.log(`AI (${usedModel}) recommended ${tracksToSearch.length} tracks.`);
+
     if (tracksToSearch.length === 0) {
-      Logger.log('AI returned no tracks to search for. Stopping execution.');
-      return;
+        Logger.log('Track list is empty. Stopping.');
+        return;
     }
-    Logger.log(`AI recommended ${tracksToSearch.length} tracks to search for.`);
 
-    const normalizedQueries = [...new Set(tracksToSearch.map(track => normalizeTrackQuery_(track)).filter(q => q))];
+    // ===============================================================
+    //           SMART SEARCH (LATIN + CYRILLIC)
+    // ===============================================================
 
-    Logger.log(`Searching for ${normalizedQueries.length} tracks on Spotify...`);
-    let foundSpotifyTracks = Search.multisearchTracks(normalizedQueries);
+    Logger.log('Preparing search queries...');
+    const initialLatinQueries = [...new Set(tracksToSearch.map(track => normalizeTrackQuery_(track)).filter(q => q))];
+
+    // --- Stage 1: Latin Search ---
+    Logger.log(`[Stage 1] Searching ${initialLatinQueries.length} tracks (Latin)...`);
+    let foundSpotifyTracks = Search.multisearchTracks(initialLatinQueries);
+    
+    // Identify missing tracks
+    const foundTrackNames = new Set(foundSpotifyTracks.map(t => `${t.artists[0].name} ${t.name}`.toLowerCase()));
+    const notFoundQueries = initialLatinQueries.filter(query => {
+        return !Array.from(foundTrackNames).some(found => found.includes(query.split(' ')[1]));
+    });
+
+    // --- Stage 2: Cyrillic Fallback (for local music) ---
+    if (notFoundQueries.length > 0) {
+      Logger.log(`${notFoundQueries.length} tracks not found. Attempting Cyrillic transliteration...`);
+      const cyrillicQueries = [];
+      notFoundQueries.forEach(query => {
+        const cyrillicGuess = reverseTransliterate_(query);
+        if (cyrillicGuess) {
+          cyrillicQueries.push(cyrillicGuess);
+          Logger.log(`[Retry] "${query}" -> "${cyrillicGuess}"`);
+        }
+      });
+
+      if (cyrillicQueries.length > 0) {
+        const additionalFoundTracks = Search.multisearchTracks(cyrillicQueries);
+        Logger.log(`[Stage 2] Found ${additionalFoundTracks.length} additional tracks.`);
+        foundSpotifyTracks.push(...additionalFoundTracks);
+      }
+    }
+
+    // Deduplicate results
     Filter.dedupTracks(foundSpotifyTracks);
-    Logger.log(`Found a total of ${foundSpotifyTracks.length} unique tracks on Spotify.`);
+    Logger.log(`Total unique tracks found: ${foundSpotifyTracks.length}.`);
 
     if (foundSpotifyTracks.length === 0) {
-      Logger.log('No tracks were found on Spotify. Stopping execution.');
+      Logger.log('No tracks found on Spotify.');
       return;
     }
 
-    // Call the modular logic to update the playlist
+    // 4. Update Playlist
     updatePlaylistIncrementally_(foundSpotifyTracks);
-
-    Logger.log('✅ Playlist creation/update process completed successfully.');
+    Logger.log('🎉 Process completed successfully.');
 
   } catch (error) {
     Logger.log(`CRITICAL ERROR: ${error.toString()}`);
-    Logger.log(`Stack Trace: ${error.stack}`);
+    Logger.log(`Stack: ${error.stack}`);
   }
 }
 
 // ===============================================================
-//                MODULAR PLAYLIST UPDATES
+//         PLAYLIST UPDATE & COVER ART
 // ===============================================================
 
-/**
- * Incrementally updates the playlist: adds new tracks and then triggers
- * metadata updates and trimming.
- * @param {Array<Object>} foundSpotifyTracks An array of new tracks to add.
- */
 function updatePlaylistIncrementally_(foundSpotifyTracks) {
-  const playlistId = AI_CONFIG.SPOTIFY_PLAYLIST_ID;
-  Logger.log(`Getting existing tracks from playlist ID: ${playlistId}...`);
-  const existingPlaylistTracks = Source.getPlaylistTracks('', playlistId);
+  Logger.log(`Fetching existing tracks...`);
+  const existingPlaylistTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
   
+  // Keep only new unique tracks
   let newUniqueTracks = Selector.sliceCopy(foundSpotifyTracks);
   Filter.removeTracks(newUniqueTracks, existingPlaylistTracks);
   const newTracksCount = newUniqueTracks.length;
+  Logger.log(`Found ${newTracksCount} new tracks to add.`);
 
   if (newTracksCount > 0) {
-    Logger.log(`Found ${newTracksCount} new tracks. Starting chunked addition...`);
+    Logger.log(`Adding ${newTracksCount} tracks in chunks...`);
     const CHUNK_SIZE = 100; // Spotify API limit
     for (let i = 0; i < newTracksCount; i += CHUNK_SIZE) {
       const chunk = newUniqueTracks.slice(i, i + CHUNK_SIZE);
-      Logger.log(`Adding chunk of ${chunk.length} tracks...`);
+      Logger.log(`Adding chunk: ${chunk.length} tracks...`);
       try {
-        Playlist.saveWithAppend({ id: playlistId, tracks: chunk, position: 'begin' });
-        if (newTracksCount > CHUNK_SIZE) Utilities.sleep(1000); // Pause between requests
+        Playlist.saveWithAppend({
+          id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
+          tracks: chunk,
+          position: 'begin' 
+        });
+        if (newTracksCount > CHUNK_SIZE) Utilities.sleep(2000);
       } catch (e) {
-        Logger.log(`ERROR during track chunk addition: ${e.toString()}`);
+        Logger.log(`ERROR adding chunk: ${e}`);
       }
     }
-  } else {
-    Logger.log('No new tracks to add.');
+    Logger.log('Tracks added.');
   }
   
-  const finalTotalTracks = Source.getPlaylistTracks('', playlistId).length;
-
-  // Update name, description, and cover art separately
+  const finalTotalTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID).length;
   updatePlaylistDetailsAndCover_(newTracksCount, finalTotalTracks);
-  
-  // Run the check to trim the playlist
   trimPlaylistIfNeeded_();
 }
 
-/**
- * Updates the playlist's metadata (name, description) and cover art without affecting the track list.
- * Uses direct API calls to preserve the original "added on" dates for tracks.
- * @param {number} addedCount The number of tracks that were just added.
- * @param {number} totalCount The total number of tracks now in the playlist.
- */
 function updatePlaylistDetailsAndCover_(addedCount, totalCount) {
-    const playlistId = AI_CONFIG.SPOTIFY_PLAYLIST_ID;
-    const coverImageBase64 = generatePlaylistCover_();
+    Logger.log('Generating and processing cover art...');
+    let coverImageBase64 = null;
+    let tempFile = null;
+    
+    try {
+        // Generate
+        coverImageBase64 = generatePlaylistCover_();
+        
+        if (coverImageBase64) {
+            // Resize via external service (to ensure < 256KB)
+            const imageBlob = Utilities.newBlob(Utilities.base64Decode(coverImageBase64), 'image/jpeg', 'temp_cover.jpg');
+            tempFile = DriveApp.createFile(imageBlob);
+            tempFile.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+            const imageUrlForResize = `https://drive.google.com/uc?id=${tempFile.getId()}`;
+            const resizeServiceUrl = `https://images.weserv.nl/?url=${encodeURIComponent(imageUrlForResize)}&w=600&h=600&q=90&output=jpg`;
+            const resizedResponse = UrlFetchApp.fetch(resizeServiceUrl, { 'muteHttpExceptions': true });
+            
+            if (resizedResponse.getResponseCode() === 200) {
+                coverImageBase64 = Utilities.base64Encode(resizedResponse.getBlob().getBytes());
+                Logger.log(`✅ Image resized successfully.`);
+            }
+        }
+    } catch (e) {
+        Logger.log(`⚠️ Cover art error: ${e}`);
+    } finally {
+        if (tempFile) {
+            try { tempFile.setTrashed(true); } catch (e) {}
+        }
+    }
 
     const playlistName = AI_CONFIG.PLAYLIST_NAME_TEMPLATE.replace('{date}', new Date().toLocaleDateString('en-US'));
     const formattedDateTime = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'MMMM dd, yyyy, HH:mm');
@@ -165,349 +245,300 @@ function updatePlaylistDetailsAndCover_(addedCount, totalCount) {
       description: `Last updated: ${formattedDateTime}. Added: ${addedCount} new. Total: ${totalCount}.`
     };
 
-    Logger.log(`Updating name and description via direct API call...`);
+    Logger.log(`Updating metadata...`);
     try {
-        SpotifyRequest.put(`${API_BASE_URL}/playlists/${playlistId}`, payload);
-        Logger.log('✅ Name and description successfully updated.');
-    } catch (e) {
-        Logger.log(`⚠️ Error during playlist details update: ${e.toString()}`);
-    }
+        SpotifyRequest.put(`${API_BASE_URL}/playlists/${AI_CONFIG.SPOTIFY_PLAYLIST_ID}`, payload);
+        Logger.log('✅ Metadata updated.');
+    } catch (e) { Logger.log(`⚠️ Metadata error: ${e}`); }
 
     if (coverImageBase64) {
-        Logger.log('Uploading new cover art...');
+        Logger.log('Uploading cover to Spotify...');
         try {
-            SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${playlistId}/images`, coverImageBase64);
-            Logger.log('✅ Cover art successfully uploaded.');
-        } catch (e) {
-            Logger.log(`⚠️ Error during cover art upload: ${e.toString()}`);
-        }
+            SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${AI_CONFIG.SPOTIFY_PLAYLIST_ID}/images`, coverImageBase64);
+            Logger.log('✅ Cover uploaded successfully.');
+        } catch (e) { Logger.log(`⚠️ Upload error: ${e}`); }
     }
 }
 
-/**
- * Checks the playlist size and trims it if it exceeds the `MAX_PLAYLIST_SIZE` limit.
- */
 function trimPlaylistIfNeeded_() {
-  const playlistId = AI_CONFIG.SPOTIFY_PLAYLIST_ID;
-  const currentTracks = Source.getPlaylistTracks('', playlistId);
+  Logger.log('Checking playlist size...');
+  const currentTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
   
   if (currentTracks.length > AI_CONFIG.MAX_PLAYLIST_SIZE) {
-    const tracksToRemoveCount = currentTracks.length - AI_CONFIG.MAX_PLAYLIST_SIZE;
-    Logger.log(`Playlist exceeds the limit (${AI_CONFIG.MAX_PLAYLIST_SIZE}). Removing ${tracksToRemoveCount} oldest tracks...`);
-    
     const trimmedTracks = currentTracks.slice(0, AI_CONFIG.MAX_PLAYLIST_SIZE);
-    
     Playlist.saveWithReplace({
-      id: playlistId,
+      id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
       tracks: trimmedTracks
     });
-    Logger.log('Playlist successfully trimmed.');
+    Logger.log(`✅ Playlist trimmed to ${AI_CONFIG.MAX_PLAYLIST_SIZE} tracks.`);
+  } else {
+    Logger.log('No trimming needed.');
   }
 }
 
 // ===============================================================
-//                     AI PROMPT CREATION
+//                     PROMPT CREATION
 // ===============================================================
 
 function prepareTracksForPrompt_() {
-  Logger.log('Getting tracks from Goofy Cache (SavedTracks.json)...');
+  Logger.log('Reading SavedTracks.json...');
   const allTracks = Cache.read('SavedTracks.json');
-  if (!allTracks || allTracks.length === 0) {
-    Logger.log('ERROR: Could not read tracks. Ensure Goofy is set up and has run at least once.');
-    return null;
-  }
+  if (!allTracks || allTracks.length === 0) throw new Error('SavedTracks.json is empty. Check Goofy configuration.');
   const randomTracks = Selector.sliceRandom(allTracks, AI_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI);
-  Logger.log(`Selected ${randomTracks.length} random tracks for analysis.`);
   return JSON.stringify(randomTracks);
 }
 
 function createTrackRecommendationPrompt_(tracksJsonString) {
-  const today = new Date();
-  const formattedDate = today.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
-
+  const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   return `
-[Role]: You are a music curator and researcher specializing in finding unexpected connections between different music scenes, genres, and eras.
-[Context]: I am providing you with a random sample of tracks from my music library. Your goal is to analyze my tastes and create a precise playlist for discovering new music.
-[Temporal Context]: Today's date is ${formattedDate}. Use this to infer the current season and mood (e.g., late summer, autumn melancholy) and let it subtly influence your recommendations.
-[Input Data]: A list of tracks in JSON format.
-\`\`\`json
-${tracksJsonString}
-\`\`\`
-[Task]:
-1. Analyze the input data to identify the main genres, moods, eras, and characteristic features of my musical taste.
-2. Based on this analysis and the temporal context, generate a list of 200 music tracks for discovering new music.
-[Constraints and Rules]:
-- **No Duplicates:** DO NOT include tracks that are already in the input data.
-- **Prioritize Novelty:** Try to suggest artists that are not in the original list.
-- **Diversity:** ~70% of the recommendations should closely match the identified tastes, while ~30% should be a bold "step aside" (adjacent genres, different eras, geographies).
-- **Genre Classics:** Be sure to include ~5 iconic hits from the dominant genre identified in the input data.
-- **Local Scene:** About 30% of the artists in the final list should be from Belarus.
-- **Language Filter:** Avoid songs in Russian.
-[Output Format]:
-- The response must be EXCLUSIVELY a valid JSON array. Each element is a string in the format "Artist Name - Track Title".
-- Do not add any explanations, comments, or markdown.
-- **VERY IMPORTANT FOR SEARCH ACCURACY:** All titles must be in lower case. Remove all special characters except for hyphens. Do not add metadata ('remastered', 'live').
-[Example of perfect output]:
-["the cure - a forest", "joy division - disorder", "molchat doma - sudno borys ryzhyi", "lavon volski - pavietrany shar"]
+[Role]: Music Curator & Researcher.
+[Context]: Today is ${today}. Analyze my taste from the JSON below.
+[Input]: \`\`\`json ${tracksJsonString} \`\`\`
+[Task]: Generate a list of 200 tracks for music discovery.
+[Rules]:
+- 70% match specific taste, 30% broad experiments (adjacent genres).
+- 30% local scene (Belarus/Eastern Europe) if appropriate.
+- Exclude: Russian language songs.
+- No duplicates.
+[Output]: EXCLUSIVELY a JSON array of strings "Artist - Track". No markdown.
+[Example]: ["Molchat Doma - Sudno", "The Cure - A Forest"]
 `;
 }
 
-// ===============================================================
-//                     COVER ART GENERATION
-// ===============================================================
-
 /**
- * Attempts to generate cover art by sequentially trying models from a fallback chain for maximum reliability.
- * @return {string | null} A Base64 encoded image, or null if all attempts fail.
+ * [GOLDEN VERSION] Generates cover art prioritizing Quality (FLUX DEV).
  */
 function generatePlaylistCover_() {
-  if (!AI_CONFIG.IMAGE_GENERATION.ENABLED) {
-    Logger.log('Cover art generation is disabled in settings.');
-    return null;
-  }
-  const tracksForPrompt = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
-  if (!tracksForPrompt || tracksForPrompt.length === 0) {
-    Logger.log('Playlist is empty, skipping cover art generation.');
-    return null;
-  }
+  if (!AI_CONFIG.IMAGE_GENERATION.ENABLED) return null;
 
-  const imagePrompt = createImagePromptFromTracks_(tracksForPrompt);
-  if (!imagePrompt) {
-    Logger.log('Failed to create an image prompt.');
-    return null;
-  }
-  
-  // A fallback chain of models to ensure reliable generation
-  const modelFallbackChain = [
-    AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.FLUX_SCHNELL,
-    AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.STABLE_DIFFUSION_3,
-    AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.DEFAULT_SDXL
-  ];
+  try {
+    const tracksForPrompt = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
+    if (!tracksForPrompt || tracksForPrompt.length === 0) return null;
 
-  for (const modelId of modelFallbackChain) {
-    const imageBase64 = callHuggingFaceApiWithModel_(imagePrompt, modelId);
-    if (imageBase64) {
-      Logger.log(`✅ Image successfully generated using "${modelId}".`);
-      return imageBase64; // Return the result of the first successful generation
+    const imagePrompt = createImagePromptFromTracks_(tracksForPrompt);
+    if (!imagePrompt) return null;
+    
+    // Model Chain: Quality -> Speed -> Alternative -> Classic
+    const modelFallbackChain = [
+      AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.FLUX_DEV,     
+      AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.FLUX_SCHNELL, 
+      AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.SD3_MEDIUM,   
+      AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.SDXL_BASE     
+    ];
+
+    let imageBase64 = null;
+
+    for (const modelId of modelFallbackChain) {
+      if (!modelId) continue;
+      Logger.log(`🚀 Generating image via: "${modelId}"...`);
+      imageBase64 = callHuggingFaceApiWithModel_(imagePrompt, modelId);
+      if (imageBase64) {
+        Logger.log(`✅ SUCCESS! Image generated by "${modelId}".`);
+        return imageBase64; 
+      } else {
+        Logger.log(`⚠️ Model "${modelId}" failed. Trying next...`);
+      }
     }
+    return null;
+  } catch (error) {
+    Logger.log(`⚠️ Cover generation critical error: ${error.toString()}`);
+    return null;
   }
-  
-  Logger.log('❌ All models in the fallback chain failed to generate an image.');
-  return null;
 }
 
 /**
- * Creates a text prompt for an image generator based on a list of tracks.
- * @param {Array<Object>} tracks An array of tracks to analyze.
- * @return {string | null} The generated prompt or null.
+ * Creates an image prompt using Gemini Fallback loop.
  */
 function createImagePromptFromTracks_(tracks) {
   const trackSample = Selector.sliceRandom(tracks, 50); 
   const trackListString = trackSample.map(t => `${t.artists[0].name} - ${t.name}`).join('\n');
+
   const promptForPrompt = `
-[Role]: You are a professional art director and expert in creating effective prompts for AI image generators.
-[Context]: I am giving you a list of music tracks. Analyze their combined mood and aesthetic to create a SINGLE, highly detailed, technically precise prompt for an AI to generate a square album cover.
-[Input Data]:
+[Role]: Visionary Art Director.
+[Input]: List of music tracks.
 ${trackListString}
-[Rules for the output prompt]:
-- **Technical Quality:** Include keywords for high-quality images: "hyperrealistic", "8k resolution", "intricate details", "professional photography".
-- **Style:** Suggest a specific, evocative visual style: "cinematic still", "lomography photo", "double exposure", "surrealism".
-- **Lighting & Composition:** Describe lighting in detail: "cinematic lighting", "volumetric light", "moody".
-- **Atmosphere:** Focus on abstract emotions, not literal scenes.
-- **Brevity:** The final prompt must be a single, concise paragraph under 120 words and in English.
-[Output Format]: ONLY the text of the prompt itself. No explanations or quotes.
+[Task]: Generate a SINGLE, highly-detailed prompt for a square album cover.
+[Rules]:
+1. Metaphorical/Abstract, not literal scenes.
+2. Define Artistic Style (e.g., Surrealism, Glitch Art) and Color Palette.
+3. Add technical keywords (8k, cinematic lighting, masterpiece).
+[Output]: ONLY the prompt text. Length < 140 words.
 `;
+
   try {
     const geminiApiKey = getGeminiApiKey_();
-    // Use a fast model to generate the prompt
-    const imagePromptText = callGeminiApi_(geminiApiKey, 'gemini-2.5-flash', promptForPrompt); 
-    return imagePromptText ? imagePromptText.replace(/[`"']/g, '').trim() : null;
-  } catch (e) {
-    Logger.log(`Failed to create the image prompt: ${e}`);
-    return null;
-  }
+    let rawImagePrompt = null;
+    
+    for (const modelName of AI_CONFIG.GEMINI_MODELS_PRIORITY) {
+      Logger.log(`🎨 Creating image prompt via: "${modelName}"...`);
+      rawImagePrompt = callGeminiApi_(geminiApiKey, modelName, promptForPrompt);
+      if (rawImagePrompt) break;
+      Utilities.sleep(1000);
+    }
+
+    if (!rawImagePrompt) return null;
+
+    try {
+      const cleanString = rawImagePrompt.replace(/```json/g, '').replace(/```/g, '').trim();
+      const parsed = JSON.parse(cleanString);
+      if (parsed && parsed.prompt) return parsed.prompt;
+    } catch (e) {}
+    
+    return rawImagePrompt.replace(/`/g, '').trim();
+
+  } catch (e) { return null; }
 }
 
 // ===============================================================
 //                       HELPER FUNCTIONS
 // ===============================================================
 
-/**
- * Calls the Hugging Face Inference API. Uses the updated `router.huggingface.co` endpoint for
- * compatibility. Implements a retry mechanism for 503 errors, which indicate a model "cold start".
- * @param {string} imagePrompt - The text prompt for image generation.
- * @param {string} modelId - The ID of the model on Hugging Face.
- * @return {string | null} A Base64 encoded image or null on error.
- */
-function callHuggingFaceApiWithModel_(imagePrompt, modelId) {
-  const apiKey = PropertiesService.getScriptProperties().getProperty('HUGGINGFACE_API_KEY');
-  if (!apiKey) {
-    Logger.log('Error: Hugging Face API key (HUGGINGFACE_API_KEY) not found.');
-    return null;
-  }
-
-  // Use the new, mandatory URL for the Hugging Face Inference API
-  const url = `https://router.huggingface.co/hf-inference/models/${modelId}`;
-
-  const payload = { 
-    "inputs": imagePrompt, 
-    "parameters": {} 
-  };
-  
-  if (modelId.includes('FLUX.1-schnell')) {
-    payload.parameters.num_inference_steps = 8;
-    payload.parameters.guidance_scale = 0.0;
-  }
-
-  const options = {
-    'method': 'post',
-    'headers': {
-      'Authorization': 'Bearer ' + apiKey,
-      'Content-Type': 'application/json'
-    },
-    'payload': JSON.stringify(payload),
-    'muteHttpExceptions': true
-  };
-
-  try {
-    Logger.log(`Sending generation request to model "${modelId}"...`);
-    let response = UrlFetchApp.fetch(url, options);
-    let responseCode = response.getResponseCode();
-
-    // Automatically retry if the model is loading ("cold start")
-    if (responseCode === 503) {
-      Logger.log('The model on Hugging Face is loading. Waiting 20 seconds and retrying...');
-      Utilities.sleep(20000); 
-      response = UrlFetchApp.fetch(url, options);
-      responseCode = response.getResponseCode();
-    }
-
-    if (responseCode === 200) {
-      const imageBlob = response.getBlob();
-      return Utilities.base64Encode(imageBlob.getBytes());
-    } else {
-      const responseBody = response.getContentText();
-      Logger.log(`Error calling Hugging Face API for "${modelId}". Code: ${responseCode}. Body: ${responseBody}`);
-      return null;
-    }
-  } catch (error) {
-    Logger.log(`Exception during Hugging Face API call for "${modelId}": ${error}`);
-    return null;
-  }
+function normalizeTrackQuery_(rawQuery) {
+  if (typeof rawQuery !== 'string') return "";
+  let q = rawQuery.toLowerCase();
+  q = q.replace(/\s*[\(\[].*?[\)\]]\s*/g, ' ').replace(/ - /g, ' ');
+  q = q.replace(/[^a-z0-9\s\u0400-\u04FF]/g, ' ').replace(/\s{2,}/g, ' ').trim();
+  return q;
 }
 
-/**
- * Normalizes a track query string for maximum search accuracy.
- * Includes transliteration from Cyrillic and handles diacritics (e.g., 'é' -> 'e').
- * @param {string} rawQuery - The raw string from the AI.
- * @return {string} A cleaned string ready for searching.
- */
-function normalizeTrackQuery_(rawQuery) {
-  if (typeof rawQuery !== 'string' || rawQuery.length === 0) return "";
-  const TRANSLIT_TABLE = { 'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'e','ж':'zh','з':'z','и':'i','й':'i','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ъ':'','ы':'y','ь':'','э':'e','ю':'iu','я':'ia','і':'i','ў':'u','ґ':'g','є':'ie','ї':'i' };
-  const DIACRITICS_MAP = { 'ä':'a', 'á':'a', 'à':'a', 'â':'a', 'ã':'a', 'å':'a','ç':'c', 'ć':'c', 'č':'c','é':'e', 'è':'e', 'ê':'e', 'ë':'e','í':'i', 'ì':'i', 'î':'i', 'ï':'i','ł':'l','ñ':'n', 'ń':'n','ö':'o', 'ó':'o', 'ò':'o', 'ô':'o', 'õ':'o', 'ø':'o','š':'s', 'ś':'s','ü':'u', 'ú':'u', 'ù':'u', 'û':'u','ý':'y','ž':'z', 'ź':'z', 'ż':'z' };
-
-  let cleanedQuery = rawQuery.toLowerCase();
-  cleanedQuery = cleanedQuery.split('').map(char => TRANSLIT_TABLE[char] || DIACRITICS_MAP[char] || char).join('');
-  cleanedQuery = cleanedQuery.replace(/\s*[\(\[].*?[\)\]]\s*/g, ' ').trim();
-  const noiseWords = ['remastered', 'remaster', 'live', 'radio edit', 'album version', 'feat', 'ft'];
-  noiseWords.forEach(word => { cleanedQuery = cleanedQuery.replace(new RegExp(`\\b${word}\\b`, 'gi'), ''); });
-  cleanedQuery = cleanedQuery.replace(/^the\s+/, '');
-  cleanedQuery = cleanedQuery.replace(/[^a-z0-9\s-]/g, ' ').replace(/\s{2,}/g, ' ').trim();
-  return cleanedQuery;
+function reverseTransliterate_(translitQuery) {
+  // Simplified reverse transliteration table
+  const REVERSE_TABLE = {
+    'shch':'шч','kh':'х','zh':'ж','ch':'ч','sh':'ш',
+    'ya':'я','yu':'ю','ts':'ц','ia':'я','iu':'ю',
+    'a':'а','b':'б','v':'в','g':'г','d':'д','e':'е','z':'з',
+    'i':'і','k':'к','l':'л','m':'м','n':'н','o':'о','p':'п',
+    'r':'р','s':'с','t':'т','u':'у','f':'ф','y':'ы'
+  };
+  
+  if (/[а-яёіў]/.test(translitQuery)) return null;
+  
+  let cyr = translitQuery;
+  for (const [lat, c] of Object.entries(REVERSE_TABLE)) {
+     cyr = cyr.split(lat).join(c); 
+  }
+  return (cyr !== translitQuery && cyr.length > 2) ? cyr : null;
 }
 
 function parseAiResponse_(rawResponse) {
-  let cleanedJsonString = rawResponse.replace(/^\s*[\*\-]\s*/gm, '').replace(/^```json\s*/, '').replace(/\s*```$/, '').replace(/,\s*\]/g, ']');
+  let cleaned = rawResponse.replace(/^\s*[\*\-]\s*/gm, '').replace(/^```json\s*/, '').replace(/\s*```$/, '').replace(/,\s*\]/g, ']');
   try {
-    let tracks = JSON.parse(cleanedJsonString);
-    if (!Array.isArray(tracks)) throw new Error("AI response is not an array.");
-    const validTracks = tracks.filter(item => typeof item === 'string' && item.trim().length > 0);
-    if (validTracks.length !== tracks.length) {
-      Logger.log(`Warning: ${tracks.length - validTracks.length} invalid items were removed from AI response.`);
-    }
-    return validTracks;
-  } catch (e) {
-    Logger.log(`CRITICAL parsing error: ${e.message}\nRaw response: ${rawResponse}`);
-    return [];
-  }
+    let tracks = JSON.parse(cleaned);
+    if (Array.isArray(tracks)) return tracks.filter(item => typeof item === 'string');
+  } catch (e) { return []; }
+  return [];
 }
 
 function getGeminiApiKey_() {
-  const apiKey = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
-  if (!apiKey) throw new Error("API Key 'GEMINI_API_KEY' not found in Script Properties.");
-  return apiKey;
+  const key = PropertiesService.getScriptProperties().getProperty('GEMINI_API_KEY');
+  if (!key) throw new Error('GEMINI_API_KEY is missing in Script Properties.');
+  return key;
 }
 
 function callGeminiApi_(apiKey, model, prompt) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-  const requestPayload = {
-     "contents": [{"parts": [{"text": prompt}]}],
-     "generationConfig": {
-       "temperature": 1.2,
-       "responseMimeType": "application/json"
-     },
-     "safetySettings": [
-        { "category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE" },
-        { "category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE" },
-        { "category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE" },
-        { "category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE" }
-      ]
-   };
-  if (model.includes('2.5')) {
-      requestPayload.generationConfig.responseSchema = {"type": "array", "items": { "type": "string" }};
-  }
-  const options = { 'method': 'post', 'contentType': 'application/json', 'payload': JSON.stringify(requestPayload), 'muteHttpExceptions': true };
-
-  const response = UrlFetchApp.fetch(url, options);
-  const responseCode = response.getResponseCode();
-  const responseBody = response.getContentText();
-  if (responseCode === 200) {
-    const jsonResponse = JSON.parse(responseBody);
-    if (jsonResponse.candidates && jsonResponse.candidates[0]?.content?.parts[0]?.text) {
-        return jsonResponse.candidates[0].content.parts[0].text;
+  const payload = { 
+      "contents": [{"parts": [{"text": prompt}]}], 
+      "generationConfig": {"responseMimeType": "application/json"} 
+  };
+  
+  try {
+    const response = UrlFetchApp.fetch(url, {
+        'method': 'post', 
+        'contentType': 'application/json', 
+        'payload': JSON.stringify(payload), 
+        'muteHttpExceptions': true
+    });
+    
+    if (response.getResponseCode() === 200) {
+      const json = JSON.parse(response.getContentText());
+      return json.candidates?.[0]?.content?.parts?.[0]?.text || null;
     }
-  }
-  Logger.log(`Error calling Gemini API. Code: ${responseCode}. Body: ${responseBody}`);
+  } catch (e) {}
   return null;
 }
 
-// ===============================================================
-//                  OPTIONAL CLEANUP FUNCTION
-// ===============================================================
+/**
+ * Universal Hugging Face API call with model-specific parameters.
+ */
+function callHuggingFaceApiWithModel_(imagePrompt, modelId) {
+  const apiKey = PropertiesService.getScriptProperties().getProperty('HUGGINGFACE_API_KEY');
+  if (!apiKey) {
+      Logger.log('HUGGINGFACE_API_KEY is missing!');
+      return null;
+  }
+
+  const url = `https://router.huggingface.co/hf-inference/models/${modelId}`;
+  const payload = { "inputs": imagePrompt, "parameters": {} };
+  
+  if (modelId.includes('FLUX.1-schnell')) {
+    payload.parameters.num_inference_steps = 4; 
+    payload.parameters.guidance_scale = 0.0;
+  } else if (modelId.includes('FLUX.1-dev')) {
+    payload.parameters.num_inference_steps = 25; 
+    payload.parameters.guidance_scale = 3.5;
+    payload.parameters.width = 1024; payload.parameters.height = 1024;
+  } else if (modelId.includes('stable-diffusion-3')) {
+    payload.parameters.num_inference_steps = 28; 
+    payload.parameters.guidance_scale = 7.0;
+    payload.parameters.width = 1024; payload.parameters.height = 1024;
+  } else {
+    payload.parameters.width = 1024; payload.parameters.height = 1024;
+  }
+
+  try {
+    let response = UrlFetchApp.fetch(url, {
+      'method': 'post', 'headers': {'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json'},
+      'payload': JSON.stringify(payload), 'muteHttpExceptions': true
+    });
+
+    if (response.getResponseCode() === 503) {
+      Logger.log(`⏳ Model loading... waiting 20s.`);
+      Utilities.sleep(20000); 
+      response = UrlFetchApp.fetch(url, {
+        'method': 'post', 'headers': {'Authorization': 'Bearer ' + apiKey, 'Content-Type': 'application/json'},
+        'payload': JSON.stringify(payload), 'muteHttpExceptions': true
+      });
+    }
+
+    if (response.getResponseCode() === 200) {
+      return Utilities.base64Encode(response.getBlob().getBytes());
+    } else {
+      Logger.log(`❌ API Error (${modelId}): ${response.getContentText()}`);
+      return null;
+    }
+  } catch (error) { return null; }
+}
 
 function cleanUpPlaylist() {
   const playlistId = AI_CONFIG.SPOTIFY_PLAYLIST_ID;
-  Logger.log(`Cleanup Task: Starting for playlist ID: ${playlistId}`);
+  Logger.log(`Cleanup Task: Starting...`);
+  
   try {
     const playlistTracks = Source.getPlaylistTracks('', playlistId);
-    if (playlistTracks.length === 0) {
-      Logger.log(`Cleanup Task: Playlist is empty. Finishing.`);
-      return;
-    }
-    const initialTrackCount = playlistTracks.length;
+    if (!playlistTracks || playlistTracks.length === 0) return;
 
-    Logger.log(`Cleanup Task: Getting listening history for the last ${AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS} days...`);
-    let recentTracksHistory = RecentTracks.get();
-    Filter.rangeDateRel(recentTracksHistory, AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS, 0);
+    Logger.log(`Getting history for ${AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS} days...`);
+    let recentHistory = RecentTracks.get();
+    Filter.rangeDateRel(recentHistory, AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS, 0);
     
-    if (recentTracksHistory.length === 0) {
-        Logger.log(`Cleanup Task: No listened tracks found in the specified period. No changes needed.`);
+    if (recentHistory.length === 0) {
+        Logger.log(`No listened tracks found.`);
         return;
     }
 
-    const recentTrackIds = new Set(recentTracksHistory.map(track => track.id));
-    const tracksToKeep = playlistTracks.filter(track => !recentTrackIds.has(track.id));
-    const tracksToRemoveCount = initialTrackCount - tracksToKeep.length;
-
-    if (tracksToRemoveCount > 0) {
-      Logger.log(`Cleanup Task: ${tracksToRemoveCount} listened tracks will be removed. Updating playlist...`);
+    const recentIds = new Set(recentHistory.map(t => t.id));
+    const tracksToKeep = playlistTracks.filter(t => !recentIds.has(t.id));
+    
+    if (tracksToKeep.length < playlistTracks.length) {
+      const removedCount = playlistTracks.length - tracksToKeep.length;
+      Logger.log(`Removing ${removedCount} tracks...`);
       Playlist.saveWithReplace({ id: playlistId, tracks: tracksToKeep });
-      Logger.log(`✅ Cleanup Task: Playlist was successfully updated.`);
+      Logger.log(`✅ Playlist cleaned.`);
     } else {
-      Logger.log(`Cleanup Task: No matches found. No changes needed.`);
+      Logger.log(`No matches found.`);
     }
-  } catch (error) {
-    Logger.log(`Cleanup Task ERROR: ${error.toString()}`);
+  } catch (e) {
+    Logger.log(`Cleanup Error: ${e}`);
   }
 }
