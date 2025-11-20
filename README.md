@@ -1,6 +1,8 @@
 # AI Spotify Playlist Generator
 
-This project is an add-on script for the [Goofy library](https://chimildic.github.io/goofy/) that uses **Google's Gemini AI** to generate personalized Spotify playlists and **Hugging Face** to create unique, AI-generated cover art.
+A Google Apps Script project that leverages **Google's Gemini AI** (Pro/Flash models) to generate personalized Spotify playlists and **Hugging Face** (Flux/SD3) to create unique, AI-generated cover art.
+
+**Current Version:** 4.0 (Golden Release)
 
 ---
 
