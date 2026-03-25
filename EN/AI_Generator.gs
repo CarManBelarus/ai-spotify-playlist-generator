@@ -1,315 +1,186 @@
 /**
  * @OnlyCurrentDoc
- * Universal AI Playlist Generator.
- * VERSION: "Golden Release" (Multi-Model Gemini + Safe Placeholders)
- * 
- * This script allows you to generate new playlists "from scratch" based on a text topic
- * or based on an existing source playlist (Sequel/Discovery mode).
+ * AI_Generator.gs - Only logic, prompt texts, and playlist settings.
  */
 
-// ===============================================================
-//                           CONFIGURATION
-// ===============================================================
-
 const GENERATOR_CONFIG = {
-  // === MAIN MODE SETTINGS ===
-
-  // Mode of operation:
-  // 'TOPIC'    - Create a playlist based on a text description (see TOPIC_PROMPT).
-  // 'PLAYLIST' - Create a playlist based on the analysis of another playlist (see SOURCE_PLAYLIST_ID).
   MODE: 'TOPIC', 
-
-  // Action:
-  // 'CREATE_NEW'      - Create a completely new playlist.
-  // 'UPDATE_EXISTING' - Overwrite an existing playlist (see TARGET_PLAYLIST_ID).
-  ACTION: 'CREATE_NEW', 
-
-  // === SETTINGS FOR 'TOPIC' MODE ===
-  // Describe the mood, genre, or occasion for your playlist.
-  TOPIC_PROMPT: 'Multi-genre road trip playlist, upbeat and atmospheric',
+  ACTION: 'UPDATE_EXISTING',
+  UPDATE_METHOD: 'APPEND', 
   
-  // === SETTINGS FOR 'PLAYLIST' MODE ===
-  SOURCE_PLAYLIST_ID: 'INSERT_SOURCE_PLAYLIST_ID_HERE', // Template playlist ID
-  TRACK_SAMPLE_SIZE_FOR_AI: 400, // Number of tracks to analyze
+  TOPIC_PROMPT: 'Create a perfect playlist for a long road trip. Mood and atmosphere: Bright, cheerful, inspiring, with a touch of road romance and freedom. This is music that sounds perfect when forests, fields, lakes, and cozy villages drift past the window. It should create a feeling of lightness and inner warmth.',
+  
+  // Insert the ID of your target playlist here
+  TARGET_PLAYLIST_ID: 'INSERT_TARGET_PLAYLIST_ID_HERE', 
+  NUMBER_OF_TRACKS_TO_REQUEST: 500,
+  MAX_PLAYLIST_SIZE: 500, // <== LIMIT FOR THE GENERATOR (you can change it to suit your needs)
 
-  // === OUTPUT SETTINGS ===
-  // ID of the playlist to overwrite (only for UPDATE_EXISTING)
-  TARGET_PLAYLIST_ID: 'INSERT_TARGET_PLAYLIST_ID_HERE',
-
-  // Naming templates for new playlists
-  NEW_PLAYLIST_NAME_FOR_TOPIC: 'AI Playlist: {topic}',
-  NEW_PLAYLIST_NAME_FOR_PLAYLIST: 'AI Recommendations: {source_name}',
-
-  // === AI SETTINGS (MULTI-MODEL FALLBACK) ===
-  // Priority list. If the first fails (503), the next one takes over.
-  GEMINI_MODELS_PRIORITY: [
-    'gemini-2.5-pro',          // 1. Best Quality
-    'gemini-flash-latest',     // 2. Best Speed
-    'gemini-flash-lite-latest' // 3. Best Efficiency
-  ],
-
-  GENERATE_COVER: true, // Generate AI cover art?
-  NUMBER_OF_TRACKS_TO_REQUEST: 200 // Target number of tracks
+  CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS: 30,
+  
+  // --- SORTING SETTINGS ---
+  SMART_SORT_ENABLED: true,  // Enable FlowSort?
+  SMART_SORT_PRESET: 'drive' // 'atmospheric', 'drive', 'radio'
 };
-
-// ===============================================================
-//                MAIN GENERATION FUNCTION
-// ===============================================================
 
 function generateCustomPlaylist() {
   try {
     const config = GENERATOR_CONFIG;
-    Logger.log(`🚀 Starting Generator. Mode: ${config.MODE}, Action: ${config.ACTION}`);
+    Logger.log(`🚀 Starting generator. Mode: ${config.MODE}, Method: ${config.UPDATE_METHOD}`);
     
-    const geminiApiKey = getGeminiApiKey_();
-    let promptText = '';
-    let sourcePlaylistName = ''; 
-
-    // 1. Prepare Prompt
-    if (config.MODE === 'PLAYLIST') {
-      const sourcePlaylistInfo = Playlist.getById(config.SOURCE_PLAYLIST_ID);
-      if (!sourcePlaylistInfo) throw new Error(`Source playlist not found.`);
-      
-      sourcePlaylistName = sourcePlaylistInfo.name;
-      const sourceTracks = Source.getPlaylistTracks('', config.SOURCE_PLAYLIST_ID);
-      if (sourceTracks.length === 0) throw new Error('Source playlist is empty.');
-
-      const tracksJson = prepareEnrichedSample_(sourceTracks);
-      promptText = createPromptFromPlaylist_(sourcePlaylistName, tracksJson);
-
-    } else if (config.MODE === 'TOPIC') {
-      promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
-    } else {
-      throw new Error(`Invalid MODE: ${config.MODE}`);
-    }
-
-    // 2. Call AI with Fallback Loop
-    let aiResponse = null;
-    let usedModel = '';
-
-    Logger.log('🧠 Generating track list...');
-
-    for (const modelName of config.GEMINI_MODELS_PRIORITY) {
-      Logger.log(`🔄 Attempting model: "${modelName}"...`);
-      aiResponse = callGeminiApi_(geminiApiKey, modelName, promptText);
-      
-      if (aiResponse) {
-        Logger.log(`✅ Model "${modelName}" responded.`);
-        usedModel = modelName;
-        break; 
-      } else {
-        Logger.log(`⚠️ Model "${modelName}" failed. Switching to next...`);
-        Utilities.sleep(1000);
-      }
-    }
-
-    if (!aiResponse) throw new Error('❌ All Gemini models are unavailable.');
-
-    // 3. Search Tracks
-    const tracksToSearch = parseAiResponse_(aiResponse).map(track => normalizeTrackQuery_(track));
-    Logger.log(`AI (${usedModel}) suggested ${tracksToSearch.length} tracks. Searching Spotify...`);
-    
-    const foundTracks = Search.multisearchTracks(tracksToSearch);
-    Filter.dedupTracks(foundTracks);
-    Logger.log(`Found ${foundTracks.length} unique tracks.`);
-
-    if (foundTracks.length === 0) {
-        Logger.log('No tracks found. Stopping.');
+    // --- LOGIC: Check size before generation ---
+    if (config.ACTION === 'UPDATE_EXISTING' && config.UPDATE_METHOD === 'APPEND') {
+      const currentTracks = Source.getPlaylistTracks('', config.TARGET_PLAYLIST_ID);
+      if (currentTracks.length >= config.MAX_PLAYLIST_SIZE) {
+        Logger.log(`🛑 Playlist is already full (currently ${currentTracks.length} tracks, limit: ${config.MAX_PLAYLIST_SIZE}).`);
+        Logger.log('Generation canceled until you listen to some songs and cleanup is triggered.');
         return;
+      }
+      Logger.log(`Playlist has free space (${currentTracks.length} of ${config.MAX_PLAYLIST_SIZE}).`);
     }
+    // --------------------------------------------------------
+
+    // 1. Create prompt
+    let promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
+
+    // 2. Call AI (using function from AI_General.gs)
+    Logger.log('🧠 Starting track list generation...');
+    const aiResult = callGeminiTextAPI(promptText);
+    const rawAiTracks = parseAiResponse(aiResult.responseText);
     
-    // 4. Save Result
-    saveOrUpdateCustomPlaylist_(foundTracks, sourcePlaylistName);
-    Logger.log('🎉 Generator completed successfully!');
+    Logger.log(`AI suggested ${rawAiTracks.length} tracks.`);
+
+    // 3. Smart search (using function from AI_General.gs)
+    const foundTracks = executeSmartSearch(rawAiTracks);
+    Logger.log(`Finally ready to save: ${foundTracks.length} unique tracks.`);
+
+    if (foundTracks.length === 0) return;
+    
+    // 4. Save and cover
+    saveOrUpdateCustomPlaylist_(foundTracks);
+    generateAndApplyCover(config.TARGET_PLAYLIST_ID, foundTracks); 
+
+    // 5. CALL SORTING (always at the end)
+    if (config.SMART_SORT_ENABLED) {
+      applySmartSort(config.TARGET_PLAYLIST_ID, config.SMART_SORT_PRESET);
+    }
+
+    Logger.log('🎉 Generation process completed successfully!');
 
   } catch (error) {
-    Logger.log(`CRITICAL ERROR: ${error.toString()}`);
+    Logger.log(`CRITICAL ERROR: ${error.toString()}\nStack: ${error.stack}`);
   }
 }
 
-// ===============================================================
-//                SAVING & UPDATING LOGIC
-// ===============================================================
-
-function saveOrUpdateCustomPlaylist_(tracks, sourcePlaylistName = '') {
+function saveOrUpdateCustomPlaylist_(tracks) {
     const config = GENERATOR_CONFIG;
     const dateStr = new Date().toLocaleDateString('en-US');
-    let playlistId, playlistName, playlistDescription;
+    let playlistId = config.TARGET_PLAYLIST_ID;
+    const targetPlaylistInfo = Playlist.getById(playlistId);
 
-    if (config.ACTION === 'CREATE_NEW') {
-        Logger.log('Creating new playlist...');
+    if (config.UPDATE_METHOD === 'APPEND') {
+        const existingTracks = Source.getPlaylistTracks('', playlistId);
+        const uniqueNewTracks = Selector.sliceCopy(tracks);
+        Filter.removeTracks(uniqueNewTracks, existingTracks);
 
-        if (config.MODE === 'PLAYLIST') {
-            playlistName = config.NEW_PLAYLIST_NAME_FOR_PLAYLIST.replace('{source_name}', sourcePlaylistName);
-            playlistDescription = `Generated on ${dateStr} based on "${sourcePlaylistName}".`;
-        } else { 
-            // Generate smart short title
-            let shortTopic = getTopicSummary_(config.TOPIC_PROMPT);
-            if (!shortTopic) {
-                shortTopic = config.TOPIC_PROMPT.length > 50 
-                    ? config.TOPIC_PROMPT.substring(0, 47) + '...' 
-                    : config.TOPIC_PROMPT;
-            }
-            playlistName = config.NEW_PLAYLIST_NAME_FOR_TOPIC.replace('{topic}', shortTopic);
-            playlistDescription = `Generated on ${dateStr}. Topic: "${config.TOPIC_PROMPT}".`;
-        }
-        
-        // Logic to find the ID of the newly created playlist
-        const initialPlaylists = Playlist.getPlaylistArray();
-        const initialPlaylistIds = new Set(initialPlaylists.map(p => p.id));
-
-        Playlist.saveWithReplace({
-            name: playlistName,
-            description: playlistDescription,
-            isPublic: false,
-            tracks: tracks
-        });
-
-        Utilities.sleep(3000); // Wait for API propagation
-        const finalPlaylists = Playlist.getPlaylistArray();
-        const newPlaylist = finalPlaylists.find(p => !initialPlaylistIds.has(p.id));
-
-        if (newPlaylist) {
-            playlistId = newPlaylist.id;
-            Logger.log(`✅ Created playlist ID: ${playlistId}`);
+        if (uniqueNewTracks.length > 0) {
+            Logger.log(`Adding ${uniqueNewTracks.length} new tracks...`);
+            Playlist.saveWithAppend({ id: playlistId, tracks: uniqueNewTracks });
+            
+            const desc = targetPlaylistInfo.description || "";
+            SpotifyRequest.put(`${API_BASE_URL}/playlists/${playlistId}`, {
+                description: (desc + ` [+ ${dateStr}: +${uniqueNewTracks.length}]`).substring(0, 300)
+            });
         } else {
-            // Fallback: search by name
-            const foundByName = Playlist.getByName(playlistName);
-            if (foundByName) {
-                playlistId = foundByName.id;
-                Logger.log(`✅ Playlist found by name: ${playlistId}`);
-            } else {
-                Logger.log('⚠️ Could not determine new playlist ID. Cover art skipped.');
-            }
+            Logger.log('⚠️ No new tracks to add.');
         }
-
-    } else if (config.ACTION === 'UPDATE_EXISTING') {
-        Logger.log(`Updating playlist ID: ${config.TARGET_PLAYLIST_ID}`);
-        if (!config.TARGET_PLAYLIST_ID || config.TARGET_PLAYLIST_ID.includes('INSERT')) {
-             throw new Error('Target Playlist ID is missing.');
-        }
-        
-        playlistId = config.TARGET_PLAYLIST_ID;
-        const targetInfo = Playlist.getById(playlistId);
-        playlistName = targetInfo ? targetInfo.name : 'Playlist';
-
-        playlistDescription = config.MODE === 'PLAYLIST' 
-            ? `Updated ${dateStr} based on "${sourcePlaylistName}".`
-            : `Updated ${dateStr}. Topic: "${config.TOPIC_PROMPT}".`;
-        
+    } else {
+        Logger.log('Full replacement of tracks...');
         Playlist.saveWithReplace({
             id: playlistId,
-            description: playlistDescription,
+            description: `Updated ${dateStr}. Topic: "${config.TOPIC_PROMPT}".`,
             tracks: tracks
         });
-        Logger.log(`✅ Playlist updated.`);
-    }
-
-    // Cover Generation
-    if (config.GENERATE_COVER && playlistId && typeof generatePlaylistCover_ === 'function') {
-        Logger.log('Generating cover art...');
-        // Use local helper to avoid dependency on global config
-        const coverImageBase64 = generateCoverFromTracksList_(tracks); 
-        
-        if (coverImageBase64) {
-            try {
-                SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${playlistId}/images`, coverImageBase64);
-                Logger.log('✅ Cover uploaded.');
-            } catch (e) { Logger.log(`⚠️ Upload error: ${e}`); }
-        }
     }
 }
-
-// ===============================================================
-//                PROMPTS & DATA PREPARATION
-// ===============================================================
 
 function createPromptFromTopic_(topic) {
+  // System instruction for the AI Model
   return `
-[Role]: Expert Music Curator.
-[Task]: Create a playlist of ${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} tracks based on the topic: "${topic}".
-[Rules]:
-- Mix of hits and hidden gems.
-- Exclude: Russian language songs.
-- Priority: Vibe and quality.
-[Format]: EXCLUSIVELY a JSON array of strings "Artist - Track".
+<system_instruction>
+    <role>
+        You are an Elite Contextual Audio Architect. Your expertise lies in psychographic playlist sequencing — translating abstract moods, activities, or themes into highly cohesive, emotionally resonant acoustic experiences.
+    </role>
+
+    <objective>
+        Synthesize a highly specific, strictly curated playlist of EXACTLY ${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} tracks. The track selection must be absolutely subjugated to the user's requested theme/topic, acting as a flawless soundtrack for that exact context.
+    </objective>
+
+    <context_awareness>
+        - **Target Topic / Vibe:** "${topic}"
+        - Treat this topic not as a mere suggestion, but as an absolute acoustic law. Every single track must mathematically and emotionally align with the semantics of this topic.
+    </context_awareness>
+
+    <behavioral_guidelines>
+        1. **Topic-Driven Acoustic Profiling (CRITICAL):** Before selecting tracks, dynamically map the requested "${topic}" to specific musical parameters:
+           - *Energy & BPM:* Does the topic demand high-octane drive, steady focus, or ambient relaxation?
+           - *Instrumentation:* Should it be electronic/synth-heavy, acoustic/organic, heavy guitars, or minimal beats?
+           - *Era & Genre:* Select the sub-genres of music that naturally fit (e.g., if topic is "Night City Drive," strictly use Synthwave/Coldwave/Post-Punk. If "Cozy Winter Morning," strictly use Indie Folk/Acoustic).
+        2. **Atmospheric Consistency:** Do not break the mood. If the topic is "Melancholy," do not insert an upbeat pop song just because the artist is famous. Every track must serve the primary emotional target.
+        3. **Deep Curation:** Balance recognized genre-appropriate anthems with high-quality underground gems to create a sophisticated texture.
+    </behavioral_guidelines>
+
+    <strict_constraints>
+        * **EXACT COUNT:** You must return exactly ${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} tracks. No more, no less.
+        * **NO MARKDOWN:** Do NOT wrap the output in \`\`\`json or any other markdown formatting.
+        * **RAW OUTPUT:** Output ONLY a valid JSON array of strings. No conversational text, no explanations, no titles, no thoughts.
+        * **SCHEMA:**["Artist - Track Name", "Artist - Track Name"]
+    </strict_constraints>
+
+    <interaction_style>
+        Completely silent executor. You speak only in raw, unformatted JSON arrays.
+    </interaction_style>
+</system_instruction>
 `;
 }
 
-function createPromptFromPlaylist_(playlistName, tracksJsonString) {
-  return `
-[Role]: AI Music Curator.
-[Input]: Playlist "${playlistName}" (JSON).
-\`\`\`${tracksJsonString}\`\`\`
-[Task]: Create a sequel/extension (${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} tracks).
-[Rules]:
-- 70% similar style, 30% adjecent discovery.
-- Exclude: Russian language songs.
-- Exclude: Duplicates from input.
-[Format]: EXCLUSIVELY a JSON array of strings "Artist - Track".
-`;
-}
-
-function prepareEnrichedSample_(sourceTracks) {
-  Logger.log(`Sampling ${GENERATOR_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI} tracks...`);
-  const randomSample = Selector.sliceRandom(sourceTracks, GENERATOR_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI);
-  const enrichedSample = randomSample.map(track => {
-    if (!track?.name || !track.artists?.[0]?.name) return null;
-    return `${track.artists[0].name} - ${track.name}`;
-  }).filter(item => item !== null);
-  return JSON.stringify(enrichedSample);
-}
-
-function getTopicSummary_(topicPrompt) {
-  if (topicPrompt.length <= 25) return topicPrompt;
-
-  Logger.log('Generating short title...');
-  const summaryPrompt = `
-Shorten this playlist title to 2-3 words (English). 
-Topic: "${topicPrompt}". 
-Output ONLY the title. No quotes.
-`;
-  
-  const apiKey = getGeminiApiKey_();
-  for (const model of GENERATOR_CONFIG.GEMINI_MODELS_PRIORITY) {
-    try {
-       const summary = callGeminiApi_(apiKey, model, summaryPrompt);
-       if (summary && summary.trim().length > 0) {
-         return summary.trim().replace(/["«»]/g, '');
-       }
-    } catch (e) {}
-  }
-  return null;
+function cleanUpGenPlaylist() {
+  const days = GENERATOR_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS || 30;
+  // Calling the universal function from AI_General.gs
+  cleanPlaylistFromRecentTracks(GENERATOR_CONFIG.TARGET_PLAYLIST_ID, days);
 }
 
 /**
- * Local cover generator helper.
- * It uses the logic from the main script but accepts a direct track list.
+ * Free (manual) generation method.
+ * Collects history, asks AI to generate a list, and saves it to a .txt file on Google Drive.
  */
-function generateCoverFromTracksList_(tracks) {
-    if (typeof createImagePromptFromTracks_ !== 'function' || typeof callHuggingFaceApiWithModel_ !== 'function') {
-        Logger.log('Required functions from AI_playlist.gs are missing.');
-        return null;
+function generateTextGenToDrive() {
+  try {
+    const config = GENERATOR_CONFIG;
+
+    // 1. Create prompt
+    let promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
+
+    // 2. Call AI
+    Logger.log('🧠 Starting track list generation...');
+    const aiResult = callGeminiTextAPI(promptText);
+    const rawAiTracks = parseAiResponse(aiResult.responseText);
+     
+    if (!rawAiTracks || rawAiTracks.length === 0) {
+      Logger.log('⚠️ AI did not return any tracks. Possible parsing error.');
+      return;
     }
+    
+    Logger.log(`✅ AI suggested ${rawAiTracks.length} tracks.`);
+    
+    // 3. Save as a text file in Google Drive ("Goofy Data" folder)
+    const fileName = 'AI_Topic_Mix.txt';
+    const textContent = rawAiTracks.join('\n'); // Join array of strings with line breaks
+    
+    Cache.write(fileName, textContent);
+    
+    Logger.log(`🎉 Done! File "${fileName}" successfully saved in your Google Drive (look in "Goofy Data" folder).`);
 
-    const imagePrompt = createImagePromptFromTracks_(tracks);
-    if (!imagePrompt) return null;
-
-    // Use Golden List models
-    const models = (typeof AI_CONFIG !== 'undefined' && AI_CONFIG.IMAGE_GENERATION) 
-        ? [
-            AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.FLUX_DEV,
-            AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.FLUX_SCHNELL,
-            AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.SD3_MEDIUM,
-            AI_CONFIG.IMAGE_GENERATION.AVAILABLE_MODELS.SDXL_BASE
-          ]
-        : ['black-forest-labs/FLUX.1-schnell', 'stabilityai/stable-diffusion-xl-base-1.0'];
-
-    for (const modelId of models) {
-        if (!modelId) continue;
-        Logger.log(`🎨 Generating cover via: "${modelId}"...`);
-        const imageBase64 = callHuggingFaceApiWithModel_(imagePrompt, modelId);
-        if (imageBase64) return imageBase64;
-    }
-    return null;
+  } catch (error) {
+    Logger.log(`❌ CRITICAL ERROR: ${error.toString()}`);
+  }
 }
