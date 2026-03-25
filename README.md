@@ -1,8 +1,8 @@
 # AI Spotify Playlist Generator
 
-A Google Apps Script project that leverages **Google's Gemini AI** (Pro/Flash models) to generate personalized Spotify playlists and **Hugging Face** (Flux/SD3) to create unique, AI-generated cover art.
+A Google Apps Script project that leverages **Google's Gemini AI** (Pro/Flash models) to generate personalized Spotify playlists, **Hugging Face** (Flux/SD3) for unique cover art, and **FlowSort** for seamless DJ-style track transitions.
 
-**Current Version:** 4.0 (Golden Release)
+**Current Version:** 5.0 (Modular Golden Release)
 
 ---
 
