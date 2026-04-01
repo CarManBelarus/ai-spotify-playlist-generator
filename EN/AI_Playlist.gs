@@ -4,25 +4,33 @@
  */
 
 const AI_CONFIG = {
-  // Insert your Spotify playlist ID here for daily updates
   SPOTIFY_PLAYLIST_ID: 'INSERT_YOUR_PLAYLIST_ID_HERE', 
-  
   TRACK_SAMPLE_SIZE_FOR_AI: 500,
-  NUMBER_OF_TRACKS_TO_REQUEST: 800, 
+  NUMBER_OF_TRACKS_TO_REQUEST: 100, 
   MAX_PLAYLIST_SIZE: 500, 
   PLAYLIST_NAME_TEMPLATE: 'AI Playlist from {date}',
   CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS: 60,
   
-  // --- SORTING SETTINGS ---
+  // --- NEW SORTING SETTINGS ---
   SMART_SORT_ENABLED: true,
   SMART_SORT_PRESET: 'atmospheric' // 'atmospheric', 'drive', 'radio'
 };
 
 function generateAndCreateSpotifyPlaylist() {
+  const lock = LockService.getScriptLock();
+  try {
+    // Wait up to 30 seconds. If a cleanup is currently running (takes 5-10 secs),
+    // the script will wait and then start generation. If locked longer - abort.
+    lock.waitLock(30000); 
+  } catch (e) {
+    Logger.log('⚠️ Process locked. Another script is currently modifying the playlist. Try again later.');
+    return;
+  }
+
   try {
     Logger.log('Starting the process of creating an AI playlist...');
 
-    // --- LOGIC: Check size before starting generation ---
+    // --- NEW LOGIC: Check size before starting generation ---
     const currentTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
     if (currentTracks.length >= AI_CONFIG.MAX_PLAYLIST_SIZE) {
       Logger.log(`🛑 The playlist is already full (currently ${currentTracks.length} tracks, limit: ${AI_CONFIG.MAX_PLAYLIST_SIZE}).`);
@@ -54,6 +62,9 @@ function generateAndCreateSpotifyPlaylist() {
 
   } catch (error) {
     Logger.log(`CRITICAL ERROR: ${error.toString()}`);
+  } finally {
+    // MANDATORY: Release the lock at the end, even if an error occurred
+    lock.releaseLock();
   }
 }
 
@@ -84,6 +95,15 @@ function updatePlaylistIncrementally_(foundSpotifyTracks) {
   });
 
   generateAndApplyCover(AI_CONFIG.SPOTIFY_PLAYLIST_ID, foundSpotifyTracks);
+
+  // Truncation if limit is exceeded (Disabled for now to let manual cleanup work)
+  // const currentTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
+  // if (currentTracks.length > AI_CONFIG.MAX_PLAYLIST_SIZE) {
+  //     Playlist.saveWithReplace({
+  //         id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
+  //         tracks: currentTracks.slice(0, AI_CONFIG.MAX_PLAYLIST_SIZE)
+  //     });
+  // }
 
   // CALL SORTING (always at the very end!)
   if (AI_CONFIG.SMART_SORT_ENABLED) {
@@ -161,9 +181,24 @@ return `
 }
 
 function cleanUpPlaylist() {
-  const days = AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS || 60;
-  // Function is called from AI_General.gs module
-  cleanPlaylistFromRecentTracks(AI_CONFIG.SPOTIFY_PLAYLIST_ID, days);
+  const lock = LockService.getScriptLock();
+  try {
+    // If generation is running (takes 3-5 minutes), cleanup shouldn't wait.
+    // It waits for only 2 seconds, and if the playlist is busy, it just skips this run.
+    lock.waitLock(2000); 
+  } catch (e) {
+    Logger.log('⏳ Playlist is currently being updated by the generator. Skipping cleanup (will run automatically on next trigger).');
+    return;
+  }
+
+  try {
+    const days = AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS || 60;
+    // Function is called from AI_General.gs module
+    cleanPlaylistFromRecentTracks(AI_CONFIG.SPOTIFY_PLAYLIST_ID, days);
+  } finally {
+    // Release the lock
+    lock.releaseLock();
+  }
 }
 
 /**
@@ -181,7 +216,7 @@ function generateTextMixToDrive() {
       return;
     }
     
-    // 2. Take 500 random tracks for analysis
+    // 2. Take random tracks for analysis
     const randomTracks = Selector.sliceRandom(allTracks, 500);
     const promptText = createTrackRecommendationPrompt_(JSON.stringify(randomTracks));
     
