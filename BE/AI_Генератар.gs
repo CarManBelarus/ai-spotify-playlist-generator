@@ -12,7 +12,7 @@ const GENERATOR_CONFIG = {
   
   // Устаўце сюды ID вашага мэтавага плэйліста
   TARGET_PLAYLIST_ID: 'УСТАЎЦЕ_ID_ВАШАГА_МЭТАВАГА_ПЛЭЙЛІСТА_ТУТ', 
-  NUMBER_OF_TRACKS_TO_REQUEST: 500,
+  NUMBER_OF_TRACKS_TO_REQUEST: 100,
   MAX_PLAYLIST_SIZE: 500, // <== ЛІМІТ ДЛЯ ГЕНЕРАТАРА (можаце змяніць пад свае патрэбы)
 
   CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS: 30,
@@ -22,34 +22,46 @@ const GENERATOR_CONFIG = {
   SMART_SORT_PRESET: 'drive' // 'atmospheric', 'drive', 'radio'
 };
 
+
 function generateCustomPlaylist() {
+  const lock = LockService.getScriptLock();
+  try {
+    // Чакаем да 30 секунд. Калі ідзе ачыстка, чакаем яе завяршэння.
+    lock.waitLock(30000); 
+  } catch (e) {
+    Logger.log('⚠️ Працэс заблакіраваны. Іншы скрыпт зараз працуе з гэтым плэйлістом. Паўтарыце пазней.');
+    return;
+  }
+
   try {
     const config = GENERATOR_CONFIG;
     Logger.log(`🚀 Запуск генератара. Рэжым: ${config.MODE}, Метад: ${config.UPDATE_METHOD}`);
     
-    // --- ЛОГІКА: Правяраем памер перад генерацыяй ---
+        // --- НОВАЯ ЛОГІКА: Правяраем памер перад генерацыяй ---
     if (config.ACTION === 'UPDATE_EXISTING' && config.UPDATE_METHOD === 'APPEND') {
       const currentTracks = Source.getPlaylistTracks('', config.TARGET_PLAYLIST_ID);
       if (currentTracks.length >= config.MAX_PLAYLIST_SIZE) {
         Logger.log(`🛑 Плэйліст ужо поўны (зараз ${currentTracks.length} трэкаў, ліміт: ${config.MAX_PLAYLIST_SIZE}).`);
-        Logger.log('Генерацыя адменена, пакуль вы не праслухаеце частку песень і не спрацуе ачыстка.');
+        Logger.log('Генерацыя адменены, пакуль вы не праслухаеце частку песень і не спрацуе ачыстка.');
         return;
       }
       Logger.log(`У плэйлісце ёсць вольнае месца (${currentTracks.length} з ${config.MAX_PLAYLIST_SIZE}).`);
     }
     // --------------------------------------------------------
 
+
+
     // 1. Ствараем промпт
     let promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
 
-    // 2. Звяртаемся да AI (выкарыстоўваем функцыю з AI_Агульнае.gs)
+    // 2. Звяртаемся да AI (выкарыстоўваем функцыю з main.gs)
     Logger.log('🧠 Пачатак генерацыі спісу трэкаў...');
     const aiResult = callGeminiTextAPI(promptText);
     const rawAiTracks = parseAiResponse(aiResult.responseText);
     
     Logger.log(`AI прапанаваў ${rawAiTracks.length} трэкаў.`);
 
-    // 3. Разумны пошук (выкарыстоўваем функцыю з AI_Агульнае.gs)
+    // 3. Разумны пошук (выкарыстоўваем функцыю з main.gs)
     const foundTracks = executeSmartSearch(rawAiTracks);
     Logger.log(`Фінальна гатова да захавання: ${foundTracks.length} унікальных трэкаў.`);
 
@@ -57,9 +69,9 @@ function generateCustomPlaylist() {
     
     // 4. Захаванне і вокладка
     saveOrUpdateCustomPlaylist_(foundTracks);
-    generateAndApplyCover(config.TARGET_PLAYLIST_ID, foundTracks); 
+    generateAndApplyCover(config.TARGET_PLAYLIST_ID, foundTracks); // з main.gs
 
-    // 5. ВЫКЛІК САРТАВАННЯ (заўсёды ў канцы)
+    // ВЫКЛІК САРТАВАННЯ
     if (config.SMART_SORT_ENABLED) {
       applySmartSort(config.TARGET_PLAYLIST_ID, config.SMART_SORT_PRESET);
     }
@@ -68,9 +80,15 @@ function generateCustomPlaylist() {
 
   } catch (error) {
     Logger.log(`КРЫТЫЧНАЯ ПАМЫЛКА: ${error.toString()}\nСтэк: ${error.stack}`);
+  } finally {
+    // Здымаем блакіроўку абавязкова!
+    lock.releaseLock();
   }
 }
 
+/**
+ * Захоўвае або абнаўляе мэтавы плэйліст (Абноўленая логіка апісання)
+ */
 function saveOrUpdateCustomPlaylist_(tracks) {
     const config = GENERATOR_CONFIG;
     const dateStr = new Date().toLocaleDateString('be-BY');
@@ -87,8 +105,13 @@ function saveOrUpdateCustomPlaylist_(tracks) {
             Playlist.saveWithAppend({ id: playlistId, tracks: uniqueNewTracks });
             
             const desc = targetPlaylistInfo.description || "";
+            
+            // АЧЫСТКА: Выдаляем усе старыя пазнакі кшталту [+ 25.3.2026: +47]
+            // \s* шукае прабелы перад дужкай, \[\+.*?\] знаходзіць любы тэкст паміж [+ і ]
+            const cleanDesc = desc.replace(/\s*\[\+.*?\]/g, '').trim();
+            
             SpotifyRequest.put(`${API_BASE_URL}/playlists/${playlistId}`, {
-                description: (desc + ` [+ ${dateStr}: +${uniqueNewTracks.length}]`).substring(0, 300)
+                description: (`${cleanDesc} [+ ${dateStr}: +${uniqueNewTracks.length}]`).substring(0, 300)
             });
         } else {
             Logger.log('⚠️ Няма новых трэкаў для дадання.');
@@ -104,7 +127,6 @@ function saveOrUpdateCustomPlaylist_(tracks) {
 }
 
 function createPromptFromTopic_(topic) {
-  // Сістэмны промпт застаецца на англійскай мове для максімальнай дакладнасці і разумення кантэксту LLM-мадэллю
   return `
 <system_instruction>
     <role>
@@ -145,11 +167,28 @@ function createPromptFromTopic_(topic) {
 `;
 }
 
+
+
 function cleanUpGenPlaylist() {
-  const days = GENERATOR_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS || 30;
-  // Выклікаем універсальную функцыю з AI_Агульнае.gs
-  cleanPlaylistFromRecentTracks(GENERATOR_CONFIG.TARGET_PLAYLIST_ID, days);
+  const lock = LockService.getScriptLock();
+  try {
+    // Чакаем толькі 2 секунды. Калі плэйліст заняты генератарам — прапускаем.
+    lock.waitLock(2000); 
+  } catch (e) {
+    Logger.log('⏳ Тэматычны плэйліст зараз абнаўляецца генератарам. Прапускаем ачыстку (спрацуе ў наступны раз).');
+    return;
+  }
+
+  try {
+    const days = GENERATOR_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS || 30;
+    // Выклікаем універсальную функцыю з AI_Агульнае.gs
+    cleanPlaylistFromRecentTracks(GENERATOR_CONFIG.TARGET_PLAYLIST_ID, days);
+  } finally {
+    // Здымаем блакіроўку
+    lock.releaseLock();
+  }
 }
+
 
 /**
  * Бясплатны (ручны) метад генерацыі.
@@ -157,12 +196,13 @@ function cleanUpGenPlaylist() {
  */
 function generateTextGenToDrive() {
   try {
+
     const config = GENERATOR_CONFIG;
 
     // 1. Ствараем промпт
     let promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
 
-    // 2. Звяртаемся да AI
+    // 2. Звяртаемся да AI (выкарыстоўваем функцыю з main.gs)
     Logger.log('🧠 Пачатак генерацыі спісу трэкаў...');
     const aiResult = callGeminiTextAPI(promptText);
     const rawAiTracks = parseAiResponse(aiResult.responseText);
@@ -174,7 +214,7 @@ function generateTextGenToDrive() {
     
     Logger.log(`✅ AI прапанаваў ${rawAiTracks.length} трэкаў.`);
     
-    // 3. Захоўваем як тэкставы файл у Google Drive (тэчка "Goofy Data")
+    // 4. Захоўваем як тэкставы файл у Google Drive (тэчка "Goofy Data")
     const fileName = 'AI_Topic_Mix.txt';
     const textContent = rawAiTracks.join('\n'); // Злучаем масіў радкоў з пераносам радка
     
