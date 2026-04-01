@@ -1,6 +1,6 @@
 /**
  * @OnlyCurrentDoc
- * AI_Агульнае.gs - Цэнтральнае сховішча глабальных налад і агульных функцый AI/Пошуку.
+ * AI_Агульнае - Цэнтральнае сховішча глабальных налад і агульных функцый AI/Пошуку.
  */
 
 // =========================================================================
@@ -21,6 +21,11 @@ const GLOBAL_AI_CONFIG = {
   IMAGE: {
     ENABLED: true,
     GEMINI_MODEL: "gemini-3.1-flash-image-preview", 
+    GEMINI_MODELS_PRIORITY:[
+      'gemini-3.1-flash-image-preview',
+      'gemini-3-pro-image-preview',
+      'gemini-2.5-flash-image'
+    ], 
     POLLINATIONS_MODEL: 'flux' // Рэзервовая мадэль
   }  
 };
@@ -122,10 +127,12 @@ function generateAndApplyCover(playlistId, tracks) {
   const prompt = buildImagePrompt_(tracks);
   if (!prompt) return;
 
+  // Запуск каскаднага перабору мадэляў Gemini
   let coverBase64 = callGeminiImageGen_(prompt);
   
+  // Калі ўсе Gemini-мадэлі праваліліся, пераходзім на рэзервовы API
   if (!coverBase64) {
-    Logger.log('⚠️ Пераход на рэзервовы генератар выяў (Pollinations)...');
+    Logger.log('⚠️ Усе мадэлі Gemini недаступныя. Пераход на рэзервовы генератар выяў (Pollinations)...');
     coverBase64 = callPollinationsImageGen_(prompt);
   }
 
@@ -135,10 +142,10 @@ function generateAndApplyCover(playlistId, tracks) {
       SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${playlistId}/images`, coverBase64);
       Logger.log('✅ Вокладка паспяхова загружана.');
     } catch (e) {
-      Logger.log(`⚠️ Памылка загрузкі вокладкі: ${e}`);
+      Logger.log(`⚠️ Памылка загрузкі вокладкі: ${e.toString()}`);
     }
   } else {
-    Logger.log('❌ Не атрымалася згенераваць вокладку.');
+    Logger.log('❌ Не атрымалася згенераваць вокладку ніводнай з даступных мадэляў.');
   }
 }
 
@@ -147,88 +154,104 @@ function buildImagePrompt_(tracks) {
   const instruction  = `
 <system_instruction>
     <role>
-        You are an Elite Synesthetic Art Director and Master Prompt Engineer for Text-to-Image AI models (e.g., Midjourney, DALL-E). Your unparalleled expertise lies in translating the acoustic, rhythmic, and emotional signature of music into breathtaking, metaphorical, and highly textured visual concepts. You do not depict music literally; you feel it as architecture, light, color, and abstraction.
+        You are an Elite Synesthetic Art Director and Master Prompt Engineer for Text-to-Image AI models. Your unparalleled expertise lies in translating the acoustic, rhythmic, and emotional signature of music into breathtaking visual concepts. You do not depict music literally; you feel it as architecture, light, color, and abstraction.
     </role>
-
     <objective>
         Analyze the emotional weight, tempo, and genre implications of the provided 50-track playlist, and synthesize its core "vibe" into a single, masterfully crafted text-to-image prompt for a square album cover.
     </objective>
-
     <context_awareness>
-        Treat the following tracklist not as text, but as an emotional landscape. Identify the underlying mood (e.g., aggressive brutalism, ethereal melancholy, nostalgic warmth, frantic neon) to dictate the visual translation.
+        Treat the following tracklist not as text, but as an emotional landscape.
         [Input Tracks]:
         ${trackSample}
     </context_awareness>
-
     <behavioral_guidelines>
-        1. **Conceptual Core:** Build the prompt around a central, evocative metaphor or abstract scene (e.g., "The memory of a forgotten dream," "A glitch in a serene landscape," "Quiet energy before a storm").
-        2. **Artistic Direction (Choose ONE):** Select a bold, definitive visual style. Do not default to generic photorealism. Choose from:
-            - *Photography:* Macro, lomography, long exposure, infrared, tilt-shift, double exposure.
-            - *Art Movements:* Abstract expressionism, brutalist architecture, bauhaus design, surrealism.
-            - *Illustration:* Vintage sci-fi cover, Japanese woodblock, technical drawing, charcoal sketch.
-            - *Digital/FX:* Glitch art, volumetric light, datamoshing, generative art.
-        3. **Composition & Lighting:** Specify the spatial arrangement (minimalist, chaotic, symmetrical, Dutch angle) and the exact lighting conditions (harsh noon sun, soft morning mist, flickering neon, dramatic chiaroscuro).
-        4. **Color Palette:** Define a strict, descriptive color scheme crucial for the mood (e.g., "A muted palette of cold blues and greys," "Acidic neon pink and cyan," "Warm earthy ochre and burnt sienna").
-        5. **The Wildcard Element:** Inject one unexpected, surreal, or abstract element to break the norm and create a unique signature (e.g., "floating geometric shapes of liquid metal," "flora made of shattered glass").
-        6. **Technical Polish:** Conclude the prompt with 2-3 precise technical keywords matching the chosen style (e.g., "shot on Portra 400, f/1.8" for photos; "thick impasto, visible brushstrokes" for paintings; "8k, octane render" for 3D/digital).
+        1. **Conceptual Core:** Build the prompt around a central, evocative metaphor or abstract scene.
+        2. **Artistic Direction (Choose ONE):** Select a bold, definitive visual style. Do not default to generic photorealism. Choose from: Photography, Abstract expressionism, Surrealism, Digital/Glitch art.
+        3. **Composition & Lighting:** Specify the spatial arrangement and exact lighting conditions.
+        4. **Color Palette:** Define a strict, descriptive color scheme.
+        5. **Technical Polish:** Conclude the prompt with 2-3 precise technical keywords matching the chosen style.
     </behavioral_guidelines>
-
     <strict_constraints>
-        * **NO LITERAL TRANSLATIONS:** NEVER include musical instruments (guitars, headphones, pianos), musical notes, vinyl records, or the names of the artists/tracks in the image prompt.
-        * **FORMAT & LENGTH:** The final output must be EXACTLY ONE paragraph. It MUST be under 140 words.
-        * **LANGUAGE:** The prompt MUST be written entirely in English.
-        * **NO FILLER TEXT:** Output ONLY the raw image prompt. No introductory words, no explanations, no formatting tags, and no quotation marks.
+        * **NO LITERAL TRANSLATIONS:** NEVER include musical instruments, notes, or artist names.
+        * **FORMAT & LENGTH:** Output MUST be exactly one paragraph under 140 words.
+        * **RAW OUTPUT:** Output ONLY the raw image prompt. No JSON, no brackets, no introductory words.
     </strict_constraints>
-
-    <interaction_style>
-        Highly descriptive, syntactically optimized for diffusion models, evocative, and strictly functional.
-    </interaction_style>
 </system_instruction>
 `;
   
   try {
     const result = callGeminiTextAPI(instruction);
     let prompt = result.responseText.replace(/```json|```/g, '').trim();
+    
+    // Разумная ачыстка: калі мадэль усё ж вярнула масіў або аб'ект
     try {
       const parsed = JSON.parse(prompt);
-      if (parsed.prompt) prompt = parsed.prompt;
-    } catch(e) {} // Гэта проста сыры тэкст
+      if (parsed.prompt) {
+        prompt = parsed.prompt;
+      } else if (Array.isArray(parsed) && parsed.length > 0) {
+        prompt = parsed[0]; // Бярэм першы элемент масіву
+      }
+    } catch(e) {} // Калі не парсіцца, значыць гэта і так чысты тэкст
     
     Logger.log(`✅ Промпт для вокладкі створаны: "${prompt.substring(0, 50)}..."`);
     return prompt;
   } catch (e) {
-    Logger.log(`⚠️ Не ўдалося стварыць промпт для выявы: ${e}`);
+    Logger.log(`⚠️ Не ўдалося стварыць промпт для выявы: ${e.toString()}`);
     return null;
   }
 }
 
 function callGeminiImageGen_(prompt) {
-  Logger.log(`🎨 [1/2] Генерацыя праз Gemini (${GLOBAL_AI_CONFIG.IMAGE.GEMINI_MODEL})...`);
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GLOBAL_AI_CONFIG.IMAGE.GEMINI_MODEL}:generateContent?key=${getGeminiKey_()}`;
-  
-  const payload = {
-    "contents": [{ "parts": [{ "text": prompt }] }],
-    "generationConfig": {
-      "responseModalities": ["IMAGE"],
-      "imageConfig": { "aspectRatio": "1:1", "imageSize": "1024x1024" }
-    }
-  };
+  const apiKey = getGeminiKey_();
 
-  try {
-    const response = UrlFetchApp.fetch(url, { 'method': 'post', 'contentType': 'application/json', 'payload': JSON.stringify(payload), 'muteHttpExceptions': true });
-    if (response.getResponseCode() === 200) {
-      const data = JSON.parse(response.getContentText());
-      const imagePart = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-      if (imagePart?.inlineData?.data) {
-        // Сцісканне PNG -> JPEG для абходу лімітаў Spotify
-        let originalBlob = Utilities.newBlob(Utilities.base64Decode(imagePart.inlineData.data), 'image/png');
-        let jpegBlob = originalBlob.getAs('image/jpeg');
-        Logger.log(`📉 Малюнак сціснуты. Новы памер: ~${Math.round(jpegBlob.getBytes().length / 1024)} KB`);
-        return Utilities.base64Encode(jpegBlob.getBytes());
-      }
+  for (const modelName of GLOBAL_AI_CONFIG.IMAGE.GEMINI_MODELS_PRIORITY) {
+    Logger.log(`🎨 Спроба генерацыі выявы праз мадэль: "${modelName}"...`);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+    
+    // АБНАЎЛЕННЕ: Выкарыстоўваем '1K' для новых мадэляў (3.1/3.0) і адключаем imageSize для старых.
+    // Параметр aspectRatio "1:1" разумеюць усе мадэлі.
+    let imageConfig = { "aspectRatio": "1:1" };
+    if (modelName.includes('3.1') || modelName.includes('3-pro')) {
+      imageConfig["imageSize"] = "1K"; 
     }
-    return null;
-  } catch (e) { return null; }
+
+    const payload = {
+      "contents": [{ "parts":[{ "text": prompt }] }],
+      "generationConfig": {
+        "responseModalities": ["IMAGE"],
+        "imageConfig": imageConfig
+      }
+    };
+
+    const options = { 
+      'method': 'post', 
+      'contentType': 'application/json', 
+      'payload': JSON.stringify(payload), 
+      'muteHttpExceptions': true 
+    };
+
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      if (response.getResponseCode() === 200) {
+        const data = JSON.parse(response.getContentText());
+        const imagePart = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+        if (imagePart?.inlineData?.data) {
+          // Сцісканне PNG -> JPEG
+          let originalBlob = Utilities.newBlob(Utilities.base64Decode(imagePart.inlineData.data), 'image/png');
+          let jpegBlob = originalBlob.getAs('image/jpeg');
+          Logger.log(`✅ Вокладка паспяхова створана мадэллю "${modelName}". Памер: ~${Math.round(jpegBlob.getBytes().length / 1024)} KB`);
+          return Utilities.base64Encode(jpegBlob.getBytes());
+        }
+      } else {
+        Logger.log(`⚠️ Мадэль "${modelName}" недаступная (Код: ${response.getResponseCode()}). Адказ: ${response.getContentText()}`);
+        Utilities.sleep(1500); 
+      }
+    } catch (e) {
+      Logger.log(`⚠️ Памылка злучэння з мадэллю "${modelName}": ${e.toString()}`);
+    }
+  }
+  
+  return null; 
 }
 
 function callPollinationsImageGen_(prompt) {
@@ -428,16 +451,74 @@ function compareStringsCustom_(first, second) {
   return (2.0 * intersectionSize) / (first.length + second.length - 2);
 }
 
+
+
+
+// =========================================================================
+// 5. УНІВЕРСАЛЬНАЯ АЧЫСТКА ПЛЭЙЛІСТОЎ
+// =========================================================================
+
 // =========================================================================
 // 5. УНІВЕРСАЛЬНАЯ АЧЫСТКА ПЛЭЙЛІСТОЎ
 // =========================================================================
 
 /**
  * Выдаляе з плэйліста трэкі, якія былі праслуханыя за апошнія N дзён.
+ * КРОПКАВАЕ ВЫДАЛЕННЕ (Не перазапісвае ўвесь плэйліст, каб захаваць даты дадання).
  * @param {string} playlistId - ID плэйліста ў Spotify
  * @param {number} days - Колькасць дзён гісторыі для аналізу
  */
 function cleanPlaylistFromRecentTracks(playlistId, days) {
+  if (!playlistId) {
+    Logger.log('❌ Памылка: ID плэйліста не зададзены.');
+    return;
+  }
+  
+  Logger.log(`🧹 Пачатак ачысткі плэйліста (ID: ${playlistId}). Аналіз за апошнія ${days} дзён...`);
+  
+  try {
+    const currentTracks = Source.getPlaylistTracks('', playlistId);
+    if (!currentTracks || currentTracks.length === 0) {
+      Logger.log('ℹ️ Плэйліст пусты. Ачыстка не патрабуецца.');
+      return;
+    }
+    
+    // Атрымліваем гісторыю праслухоўванняў (з кэшу goofy)
+    let recentTracks = RecentTracks.get(); 
+    if (!recentTracks || recentTracks.length === 0) {
+      Logger.log('ℹ️ Гісторыя праслухоўванняў пустая.');
+      return;
+    }
+    
+    // Фільтруем гісторыю па даце (адсякаем усё, што старэй за ўказаныя дні)
+    Filter.rangeDateRel(recentTracks, days, 0);
+    const recentIds = new Set(recentTracks.map(t => t.id));
+    
+    // Знаходзім ТРЭКІ ДЛЯ ВЫДАЛЕННЯ (тыя, што ёсць і ў плэйлісце, і ў гісторыі)
+    const tracksToRemove = currentTracks.filter(t => recentIds.has(t.id));
+    
+    if (tracksToRemove.length > 0) {
+      Logger.log(`🗑️ Знойдзена ${tracksToRemove.length} праслуханых трэкаў. Выдаляем толькі іх...`);
+      
+      // Фарміруем масіў аб'ектаў для выдалення патрабаванага фармату Spotify
+      const urisToDelete = tracksToRemove.map(t => ({ uri: t.uri || `spotify:track:${t.id}` }));
+      
+      // Выдаляем часткамі па 100 трэкаў (ліміт API Spotify)
+      for (let i = 0; i < urisToDelete.length; i += 100) {
+          const chunk = urisToDelete.slice(i, i + 100);
+          SpotifyRequest.deleteRequest(`${API_BASE_URL}/playlists/${playlistId}/tracks`, { tracks: chunk });
+      }
+      
+      Logger.log(`✅ Ачыстка кропкава завершана. Выдалена: ${tracksToRemove.length} трэкаў.`);
+    } else {
+      Logger.log('✅ Супадзенняў не знойдзена. Усе трэкі "свежыя", нічога не выдалена.');
+    }
+  } catch (e) {
+    Logger.log(`❌ Памылка пры ачыстцы: ${e.toString()}`);
+  }
+}
+
+/* function cleanPlaylistFromRecentTracks(playlistId, days) {
   if (!playlistId) {
     Logger.log('❌ Памылка: ID плэйліста не зададзены.');
     return;
@@ -486,7 +567,7 @@ function cleanPlaylistFromRecentTracks(playlistId, days) {
   } catch (e) {
     Logger.log(`❌ Памылка пры ачыстцы: ${e.toString()}`);
   }
-}
+} */
 
 // =========================================================================
 // 6. ІНТЭГРАЦЫЯ FLOWSORT (РАЗУМНАЕ САРТАВАННЕ)
@@ -504,7 +585,7 @@ function applySmartSort(playlistId, preset = 'atmospheric') {
   try {
     // Правяраем, ці існуе сам аб'ект FlowSort
     if (typeof FlowSort === 'undefined' || !FlowSort.sortBalancedWave) {
-       Logger.log('❌ Памылка: Аб\'ект FlowSort не знойдзены. Пераканайцеся, што вы дадалі код з FlowSort.gs у ваш праект.');
+       Logger.log('❌ Памылка: Аб\'ект FlowSort не знойдзены. Пераканайцеся, што файл FlowSort.gs існуе і не мае памылак.');
        return;
     }
 
