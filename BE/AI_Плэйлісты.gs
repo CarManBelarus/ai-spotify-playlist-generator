@@ -19,10 +19,20 @@ const AI_CONFIG = {
 };
 
 function generateAndCreateSpotifyPlaylist() {
+  const lock = LockService.getScriptLock();
+  try {
+    // Чакаем да 30 секунд. Калі ў гэты момант ідзе ачыстка (якая займае 5-10 сек),
+    // скрыпт пачакае і пачне генерацыю. Калі блакіроўка вісіць даўжэй - адмена.
+    lock.waitLock(30000); 
+  } catch (e) {
+    Logger.log('⚠️ Працэс заблакіраваны. Іншы скрыпт зараз працуе з плэйлістом. Паўтарыце пазней.');
+    return;
+  }
+
   try {
     Logger.log('Пачатак працэсу стварэння AI плэйліста...');
 
-    // --- ЛОГІКА: Правяраем памер да пачатку генерацыі ---
+    // --- НОВАЯ ЛОГІКА: Правяраем памер да пачатку генерацыі ---
     const currentTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
     if (currentTracks.length >= AI_CONFIG.MAX_PLAYLIST_SIZE) {
       Logger.log(`🛑 Плэйліст ужо поўны (зараз ${currentTracks.length} трэкаў, ліміт: ${AI_CONFIG.MAX_PLAYLIST_SIZE}).`);
@@ -32,18 +42,19 @@ function generateAndCreateSpotifyPlaylist() {
     Logger.log(`У плэйлісце ёсць вольнае месца (${currentTracks.length} з ${AI_CONFIG.MAX_PLAYLIST_SIZE}). Працягваем...`);
     // ------------------------------------------------------------
 
+
     // 1. Бярэм трэкі
     const allTracks = Cache.read('SavedTracks.json');
     const randomTracks = Selector.sliceRandom(allTracks, AI_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI);
     const promptText = createTrackRecommendationPrompt_(JSON.stringify(randomTracks));
 
-    // 2. Выклік AI з AI_Агульнае.gs
+    // 2. Выклік AI з main.gs
     const aiResult = callGeminiTextAPI(promptText);
     const rawAiTracks = parseAiResponse(aiResult.responseText);
     
     if (rawAiTracks.length === 0) return;
 
-    // 3. Бронебітны пошук з AI_Агульнае.gs
+    // 3. Бронебітны пошук з main.gs
     const foundSpotifyTracks = executeSmartSearch(rawAiTracks);
     if (foundSpotifyTracks.length === 0) return;
 
@@ -54,6 +65,9 @@ function generateAndCreateSpotifyPlaylist() {
 
   } catch (error) {
     Logger.log(`КРЫТЫЧНАЯ ПАМЫЛКА: ${error.toString()}`);
+  } finally {
+    // АБАВЯЗКОВА: Здымаем блакіроўку ў канцы, нават калі адбылася памылка
+    lock.releaseLock();
   }
 }
 
@@ -74,7 +88,7 @@ function updatePlaylistIncrementally_(foundSpotifyTracks) {
     }
   }
 
-  // Абнаўленне назвы і выклік генератара вокладкі з AI_Агульнае.gs
+  // Абнаўленне назвы і выклік генератара вокладкі з main.gs
   const finalTotal = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID).length;
   const dateStr = new Date().toLocaleDateString('be-BY');
   
@@ -84,8 +98,17 @@ function updatePlaylistIncrementally_(foundSpotifyTracks) {
   });
 
   generateAndApplyCover(AI_CONFIG.SPOTIFY_PLAYLIST_ID, foundSpotifyTracks);
+  
+  // Абразанне калі перавышае ліміт
+  // const currentTracks = Source.getPlaylistTracks('', AI_CONFIG.SPOTIFY_PLAYLIST_ID);
+  // if (currentTracks.length > AI_CONFIG.MAX_PLAYLIST_SIZE) {
+  //     Playlist.saveWithReplace({
+  //         id: AI_CONFIG.SPOTIFY_PLAYLIST_ID,
+  //         tracks: currentTracks.slice(0, AI_CONFIG.MAX_PLAYLIST_SIZE)
+  //     });
+  // }
 
-  // ВЫКЛІК САРТАВАННЯ (заўсёды ў самым канцы!)
+    // ВЫКЛІК САРТАВАННЯ (заўсёды ў самым канцы!)
   if (AI_CONFIG.SMART_SORT_ENABLED) {
      applySmartSort(AI_CONFIG.SPOTIFY_PLAYLIST_ID, AI_CONFIG.SMART_SORT_PRESET);
   }
@@ -95,7 +118,7 @@ function createTrackRecommendationPrompt_(tracksJsonString) {
   const today = new Date();
   const formattedDate = today.toLocaleDateString('be-BY', { year: 'numeric', month: 'long', day: 'numeric' });
 
-  // Дынамічны падлік трэкаў на аснове галоўнага параметра
+ // Дынамічны падлік трэкаў на аснове галоўнага параметра
   const total = AI_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST;
   const coreCount = Math.round(total * 0.55);
   const pivotCount = Math.round(total * 0.25);
@@ -122,7 +145,7 @@ return `
     <behavioral_guidelines>
         Падчас генерацыі плэйліста выкарыстоўвай наступную стратэгію міксавання (прапорцыі павінны быць выкананы максімальна дакладна для ${total} трэкаў):
 
-        1. **Core Matches (~${coreCount} трэкаў): Зона глыбокага камфорту.**
+        1. **Core Matches (~${coreCount} трэкаў трэкаў): Зона глыбокага камфорту.**
            - Шукай малавядомыя песні (Deep Cuts, B-sides) любімых выканаўцаў карыстальніка. Не дадавай іх галоўныя хіты.
            - Знаходзь новых, падобных па гучанні выканаўцаў, якіх карыстальнік яшчэ не ведае.
         
@@ -134,7 +157,7 @@ return `
            - Беларуская музыка (сучасная або класіка), якая ІДЭАЛЬНА пасуе да асноўнага вайбу (DNA).
            - Напрыклад: да пост-панку — Nürnberg / Molchat Doma / Dlina Volny; да року — Мроя / Akute; да фолку — Vuraj / Relikt. Гэта не павінна выглядаць як выпадковая ўстаўка.
         
-        4. **Genre Classics (~${classicCount} трэкаў): Жанравыя шлягеры.**
+        4. **Genre Classics ((~${classicCount} трэкаў): Жанравыя шлягеры.**
            - Магутныя "якары" плэйліста. Абсалютныя гімны жанраў, якія дамінуюць у ДНК карыстальніка (напр., "Love Will Tear Us Apart" для пост-панку).
     </behavioral_guidelines>
 
@@ -164,11 +187,29 @@ return `
 `;
 }
 
+
+
 function cleanUpPlaylist() {
-  const days = AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS || 60;
-  // Функцыя выклікаецца з модуля AI_Агульнае.gs
-  cleanPlaylistFromRecentTracks(AI_CONFIG.SPOTIFY_PLAYLIST_ID, days);
+  const lock = LockService.getScriptLock();
+  try {
+    // Калі ідзе генерацыя (займае 3-5 хвілін), ачыстка не павінна чакаць.
+    // Яна чакае толькі 2 секунды, і калі плэйліст заняты — проста прапускае гэты запуск.
+    lock.waitLock(2000); 
+  } catch (e) {
+    Logger.log('⏳ Плэйліст зараз абнаўляецца генератарам. Прапускаем ачыстку (яна аўтаматычна спрацуе па наступным трыгеры).');
+    return;
+  }
+
+  try {
+    const days = AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS || 60;
+    // Выклікаем універсальную функцыю з AI_Агульнае.gs
+    cleanPlaylistFromRecentTracks(AI_CONFIG.SPOTIFY_PLAYLIST_ID, days);
+  } finally {
+    // Здымаем блакіроўку
+    lock.releaseLock();
+  }
 }
+
 
 /**
  * Бясплатны (ручны) метад генерацыі.
