@@ -10,24 +10,32 @@ const GENERATOR_CONFIG = {
   
   TOPIC_PROMPT: 'Create a perfect playlist for a long road trip. Mood and atmosphere: Bright, cheerful, inspiring, with a touch of road romance and freedom. This is music that sounds perfect when forests, fields, lakes, and cozy villages drift past the window. It should create a feeling of lightness and inner warmth.',
   
-  // Insert the ID of your target playlist here
   TARGET_PLAYLIST_ID: 'INSERT_TARGET_PLAYLIST_ID_HERE', 
-  NUMBER_OF_TRACKS_TO_REQUEST: 500,
-  MAX_PLAYLIST_SIZE: 500, // <== LIMIT FOR THE GENERATOR (you can change it to suit your needs)
+  NUMBER_OF_TRACKS_TO_REQUEST: 100,
+  MAX_PLAYLIST_SIZE: 500, // <== NEW LIMIT FOR THE GENERATOR
 
   CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS: 30,
   
-  // --- SORTING SETTINGS ---
+  // --- NEW SORTING SETTINGS ---
   SMART_SORT_ENABLED: true,  // Enable FlowSort?
   SMART_SORT_PRESET: 'drive' // 'atmospheric', 'drive', 'radio'
 };
 
 function generateCustomPlaylist() {
+  const lock = LockService.getScriptLock();
+  try {
+    // Wait up to 30 seconds. If cleanup is running, wait for it to finish.
+    lock.waitLock(30000); 
+  } catch (e) {
+    Logger.log('⚠️ Process locked. Another script is currently modifying this playlist. Try again later.');
+    return;
+  }
+
   try {
     const config = GENERATOR_CONFIG;
     Logger.log(`🚀 Starting generator. Mode: ${config.MODE}, Method: ${config.UPDATE_METHOD}`);
     
-    // --- LOGIC: Check size before generation ---
+    // --- NEW LOGIC: Check size before generation ---
     if (config.ACTION === 'UPDATE_EXISTING' && config.UPDATE_METHOD === 'APPEND') {
       const currentTracks = Source.getPlaylistTracks('', config.TARGET_PLAYLIST_ID);
       if (currentTracks.length >= config.MAX_PLAYLIST_SIZE) {
@@ -42,14 +50,14 @@ function generateCustomPlaylist() {
     // 1. Create prompt
     let promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
 
-    // 2. Call AI (using function from AI_General.gs)
+    // 2. Call AI 
     Logger.log('🧠 Starting track list generation...');
     const aiResult = callGeminiTextAPI(promptText);
     const rawAiTracks = parseAiResponse(aiResult.responseText);
     
     Logger.log(`AI suggested ${rawAiTracks.length} tracks.`);
 
-    // 3. Smart search (using function from AI_General.gs)
+    // 3. Smart search 
     const foundTracks = executeSmartSearch(rawAiTracks);
     Logger.log(`Finally ready to save: ${foundTracks.length} unique tracks.`);
 
@@ -59,7 +67,7 @@ function generateCustomPlaylist() {
     saveOrUpdateCustomPlaylist_(foundTracks);
     generateAndApplyCover(config.TARGET_PLAYLIST_ID, foundTracks); 
 
-    // 5. CALL SORTING (always at the end)
+    // CALL SORTING
     if (config.SMART_SORT_ENABLED) {
       applySmartSort(config.TARGET_PLAYLIST_ID, config.SMART_SORT_PRESET);
     }
@@ -68,9 +76,15 @@ function generateCustomPlaylist() {
 
   } catch (error) {
     Logger.log(`CRITICAL ERROR: ${error.toString()}\nStack: ${error.stack}`);
+  } finally {
+    // MANDATORY: Release the lock
+    lock.releaseLock();
   }
 }
 
+/**
+ * Saves or updates the target playlist (Updated Description Logic)
+ */
 function saveOrUpdateCustomPlaylist_(tracks) {
     const config = GENERATOR_CONFIG;
     const dateStr = new Date().toLocaleDateString('en-US');
@@ -87,8 +101,13 @@ function saveOrUpdateCustomPlaylist_(tracks) {
             Playlist.saveWithAppend({ id: playlistId, tracks: uniqueNewTracks });
             
             const desc = targetPlaylistInfo.description || "";
+            
+            // CLEANUP: Remove all old update tags like [+ 3/25/2026: +47]
+            // \s* matches spaces before the bracket, \[\+.*?\] matches the tag itself
+            const cleanDesc = desc.replace(/\s*\[\+.*?\]/g, '').trim();
+            
             SpotifyRequest.put(`${API_BASE_URL}/playlists/${playlistId}`, {
-                description: (desc + ` [+ ${dateStr}: +${uniqueNewTracks.length}]`).substring(0, 300)
+                description: (`${cleanDesc} [+ ${dateStr}: +${uniqueNewTracks.length}]`).substring(0, 300)
             });
         } else {
             Logger.log('⚠️ No new tracks to add.');
@@ -104,7 +123,6 @@ function saveOrUpdateCustomPlaylist_(tracks) {
 }
 
 function createPromptFromTopic_(topic) {
-  // System instruction for the AI Model
   return `
 <system_instruction>
     <role>
@@ -124,7 +142,7 @@ function createPromptFromTopic_(topic) {
         1. **Topic-Driven Acoustic Profiling (CRITICAL):** Before selecting tracks, dynamically map the requested "${topic}" to specific musical parameters:
            - *Energy & BPM:* Does the topic demand high-octane drive, steady focus, or ambient relaxation?
            - *Instrumentation:* Should it be electronic/synth-heavy, acoustic/organic, heavy guitars, or minimal beats?
-           - *Era & Genre:* Select the sub-genres of music that naturally fit (e.g., if topic is "Night City Drive," strictly use Synthwave/Coldwave/Post-Punk. If "Cozy Winter Morning," strictly use Indie Folk/Acoustic).
+           - *Era & Genre:* Select the sub-genres of music that naturally fit.
         2. **Atmospheric Consistency:** Do not break the mood. If the topic is "Melancholy," do not insert an upbeat pop song just because the artist is famous. Every track must serve the primary emotional target.
         3. **Deep Curation:** Balance recognized genre-appropriate anthems with high-quality underground gems to create a sophisticated texture.
     </behavioral_guidelines>
@@ -144,9 +162,23 @@ function createPromptFromTopic_(topic) {
 }
 
 function cleanUpGenPlaylist() {
-  const days = GENERATOR_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS || 30;
-  // Calling the universal function from AI_General.gs
-  cleanPlaylistFromRecentTracks(GENERATOR_CONFIG.TARGET_PLAYLIST_ID, days);
+  const lock = LockService.getScriptLock();
+  try {
+    // Wait only 2 seconds. If the playlist is busy with the generator — skip.
+    lock.waitLock(2000); 
+  } catch (e) {
+    Logger.log('⏳ Topic playlist is currently being updated by the generator. Skipping cleanup (will run next time).');
+    return;
+  }
+
+  try {
+    const days = GENERATOR_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS || 30;
+    // Calling the universal function from AI_General.gs
+    cleanPlaylistFromRecentTracks(GENERATOR_CONFIG.TARGET_PLAYLIST_ID, days);
+  } finally {
+    // Release the lock
+    lock.releaseLock();
+  }
 }
 
 /**
@@ -160,7 +192,7 @@ function generateTextGenToDrive() {
     // 1. Create prompt
     let promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
 
-    // 2. Call AI
+    // 2. Call AI 
     Logger.log('🧠 Starting track list generation...');
     const aiResult = callGeminiTextAPI(promptText);
     const rawAiTracks = parseAiResponse(aiResult.responseText);
