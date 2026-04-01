@@ -21,6 +21,11 @@ const GLOBAL_AI_CONFIG = {
   IMAGE: {
     ENABLED: true,
     GEMINI_MODEL: "gemini-3.1-flash-image-preview", 
+    GEMINI_MODELS_PRIORITY:[
+      'gemini-3.1-flash-image-preview',
+      'gemini-3-pro-image-preview',
+      'gemini-2.5-flash-image'
+    ], 
     POLLINATIONS_MODEL: 'flux' // Fallback model
   }  
 };
@@ -84,11 +89,11 @@ function callGeminiTextAPI(promptText) {
         Utilities.sleep(1000);
       }
     } catch (e) {
-      Logger.log(`⚠️ Connection error with model "${modelName}": ${e}`);
+      Logger.log(`⚠️ Connection error with model "${modelName}": ${e.toString()}`);
     }
   }
 
-  if (!aiResponse) throw new Error('❌ All Gemini models are unavailable.');
+  if (!aiResponse) throw new Error('❌ All Gemini text models are unavailable.');
   
   return { responseText: aiResponse, model: usedModel };
 }
@@ -122,10 +127,12 @@ function generateAndApplyCover(playlistId, tracks) {
   const prompt = buildImagePrompt_(tracks);
   if (!prompt) return;
 
+  // Execute cascading iteration through Gemini image models
   let coverBase64 = callGeminiImageGen_(prompt);
   
+  // If all Gemini models failed, fallback to external API
   if (!coverBase64) {
-    Logger.log('⚠️ Switching to fallback image generator (Pollinations)...');
+    Logger.log('⚠️ All Gemini image models failed. Switching to fallback generator (Pollinations)...');
     coverBase64 = callPollinationsImageGen_(prompt);
   }
 
@@ -135,10 +142,10 @@ function generateAndApplyCover(playlistId, tracks) {
       SpotifyRequest.putImage(`${API_BASE_URL}/playlists/${playlistId}/images`, coverBase64);
       Logger.log('✅ Cover uploaded successfully.');
     } catch (e) {
-      Logger.log(`⚠️ Cover upload error: ${e}`);
+      Logger.log(`⚠️ Cover upload error: ${e.toString()}`);
     }
   } else {
-    Logger.log('❌ Failed to generate cover art.');
+    Logger.log('❌ Failed to generate cover art via any available model.');
   }
 }
 
@@ -147,88 +154,104 @@ function buildImagePrompt_(tracks) {
   const instruction  = `
 <system_instruction>
     <role>
-        You are an Elite Synesthetic Art Director and Master Prompt Engineer for Text-to-Image AI models (e.g., Midjourney, DALL-E). Your unparalleled expertise lies in translating the acoustic, rhythmic, and emotional signature of music into breathtaking, metaphorical, and highly textured visual concepts. You do not depict music literally; you feel it as architecture, light, color, and abstraction.
+        You are an Elite Synesthetic Art Director and Master Prompt Engineer for Text-to-Image AI models. Your unparalleled expertise lies in translating the acoustic, rhythmic, and emotional signature of music into breathtaking visual concepts. You do not depict music literally; you feel it as architecture, light, color, and abstraction.
     </role>
-
     <objective>
         Analyze the emotional weight, tempo, and genre implications of the provided 50-track playlist, and synthesize its core "vibe" into a single, masterfully crafted text-to-image prompt for a square album cover.
     </objective>
-
     <context_awareness>
-        Treat the following tracklist not as text, but as an emotional landscape. Identify the underlying mood (e.g., aggressive brutalism, ethereal melancholy, nostalgic warmth, frantic neon) to dictate the visual translation.
+        Treat the following tracklist not as text, but as an emotional landscape.
         [Input Tracks]:
         ${trackSample}
     </context_awareness>
-
     <behavioral_guidelines>
-        1. **Conceptual Core:** Build the prompt around a central, evocative metaphor or abstract scene (e.g., "The memory of a forgotten dream," "A glitch in a serene landscape," "Quiet energy before a storm").
-        2. **Artistic Direction (Choose ONE):** Select a bold, definitive visual style. Do not default to generic photorealism. Choose from:
-            - *Photography:* Macro, lomography, long exposure, infrared, tilt-shift, double exposure.
-            - *Art Movements:* Abstract expressionism, brutalist architecture, bauhaus design, surrealism.
-            - *Illustration:* Vintage sci-fi cover, Japanese woodblock, technical drawing, charcoal sketch.
-            - *Digital/FX:* Glitch art, volumetric light, datamoshing, generative art.
-        3. **Composition & Lighting:** Specify the spatial arrangement (minimalist, chaotic, symmetrical, Dutch angle) and the exact lighting conditions (harsh noon sun, soft morning mist, flickering neon, dramatic chiaroscuro).
-        4. **Color Palette:** Define a strict, descriptive color scheme crucial for the mood (e.g., "A muted palette of cold blues and greys," "Acidic neon pink and cyan," "Warm earthy ochre and burnt sienna").
-        5. **The Wildcard Element:** Inject one unexpected, surreal, or abstract element to break the norm and create a unique signature (e.g., "floating geometric shapes of liquid metal," "flora made of shattered glass").
-        6. **Technical Polish:** Conclude the prompt with 2-3 precise technical keywords matching the chosen style (e.g., "shot on Portra 400, f/1.8" for photos; "thick impasto, visible brushstrokes" for paintings; "8k, octane render" for 3D/digital).
+        1. **Conceptual Core:** Build the prompt around a central, evocative metaphor or abstract scene.
+        2. **Artistic Direction (Choose ONE):** Select a bold, definitive visual style. Do not default to generic photorealism. Choose from: Photography, Abstract expressionism, Surrealism, Digital/Glitch art.
+        3. **Composition & Lighting:** Specify the spatial arrangement and exact lighting conditions.
+        4. **Color Palette:** Define a strict, descriptive color scheme.
+        5. **Technical Polish:** Conclude the prompt with 2-3 precise technical keywords matching the chosen style.
     </behavioral_guidelines>
-
     <strict_constraints>
-        * **NO LITERAL TRANSLATIONS:** NEVER include musical instruments (guitars, headphones, pianos), musical notes, vinyl records, or the names of the artists/tracks in the image prompt.
-        * **FORMAT & LENGTH:** The final output must be EXACTLY ONE paragraph. It MUST be under 140 words.
-        * **LANGUAGE:** The prompt MUST be written entirely in English.
-        * **NO FILLER TEXT:** Output ONLY the raw image prompt. No introductory words, no explanations, no formatting tags, and no quotation marks.
+        * **NO LITERAL TRANSLATIONS:** NEVER include musical instruments, notes, or artist names.
+        * **FORMAT & LENGTH:** Output MUST be exactly one paragraph under 140 words.
+        * **RAW OUTPUT:** Output ONLY the raw image prompt. No JSON, no brackets, no introductory words.
     </strict_constraints>
-
-    <interaction_style>
-        Highly descriptive, syntactically optimized for diffusion models, evocative, and strictly functional.
-    </interaction_style>
 </system_instruction>
 `;
   
   try {
     const result = callGeminiTextAPI(instruction);
     let prompt = result.responseText.replace(/```json|```/g, '').trim();
+    
+    // Smart parsing: fallback if the model returned an array or object
     try {
       const parsed = JSON.parse(prompt);
-      if (parsed.prompt) prompt = parsed.prompt;
-    } catch(e) {} // It's just raw text
+      if (parsed.prompt) {
+        prompt = parsed.prompt;
+      } else if (Array.isArray(parsed) && parsed.length > 0) {
+        prompt = parsed[0]; // Take the first element of the array
+      }
+    } catch(e) {} // If it doesn't parse, it's just raw text
     
     Logger.log(`✅ Image prompt created: "${prompt.substring(0, 50)}..."`);
     return prompt;
   } catch (e) {
-    Logger.log(`⚠️ Failed to create image prompt: ${e}`);
+    Logger.log(`⚠️ Failed to create image prompt: ${e.toString()}`);
     return null;
   }
 }
 
 function callGeminiImageGen_(prompt) {
-  Logger.log(`🎨 [1/2] Generating via Gemini (${GLOBAL_AI_CONFIG.IMAGE.GEMINI_MODEL})...`);
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${GLOBAL_AI_CONFIG.IMAGE.GEMINI_MODEL}:generateContent?key=${getGeminiKey_()}`;
-  
-  const payload = {
-    "contents": [{ "parts": [{ "text": prompt }] }],
-    "generationConfig": {
-      "responseModalities": ["IMAGE"],
-      "imageConfig": { "aspectRatio": "1:1", "imageSize": "1024x1024" }
-    }
-  };
+  const apiKey = getGeminiKey_();
 
-  try {
-    const response = UrlFetchApp.fetch(url, { 'method': 'post', 'contentType': 'application/json', 'payload': JSON.stringify(payload), 'muteHttpExceptions': true });
-    if (response.getResponseCode() === 200) {
-      const data = JSON.parse(response.getContentText());
-      const imagePart = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
-      if (imagePart?.inlineData?.data) {
-        // Compress PNG -> JPEG to bypass Spotify limits
-        let originalBlob = Utilities.newBlob(Utilities.base64Decode(imagePart.inlineData.data), 'image/png');
-        let jpegBlob = originalBlob.getAs('image/jpeg');
-        Logger.log(`📉 Image compressed. New size: ~${Math.round(jpegBlob.getBytes().length / 1024)} KB`);
-        return Utilities.base64Encode(jpegBlob.getBytes());
-      }
+  for (const modelName of GLOBAL_AI_CONFIG.IMAGE.GEMINI_MODELS_PRIORITY) {
+    Logger.log(`🎨 Attempting to generate image via model: "${modelName}"...`);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`;
+    
+    // UPDATE: Use '1K' for new models (3.1/3.0) and disable imageSize for older ones.
+    // 'aspectRatio' is supported universally.
+    let imageConfig = { "aspectRatio": "1:1" };
+    if (modelName.includes('3.1') || modelName.includes('3-pro')) {
+      imageConfig["imageSize"] = "1K"; 
     }
-    return null;
-  } catch (e) { return null; }
+
+    const payload = {
+      "contents": [{ "parts":[{ "text": prompt }] }],
+      "generationConfig": {
+        "responseModalities": ["IMAGE"],
+        "imageConfig": imageConfig
+      }
+    };
+
+    const options = { 
+      'method': 'post', 
+      'contentType': 'application/json', 
+      'payload': JSON.stringify(payload), 
+      'muteHttpExceptions': true 
+    };
+
+    try {
+      const response = UrlFetchApp.fetch(url, options);
+      if (response.getResponseCode() === 200) {
+        const data = JSON.parse(response.getContentText());
+        const imagePart = data.candidates?.[0]?.content?.parts?.find(p => p.inlineData);
+        if (imagePart?.inlineData?.data) {
+          // Compress PNG -> JPEG
+          let originalBlob = Utilities.newBlob(Utilities.base64Decode(imagePart.inlineData.data), 'image/png');
+          let jpegBlob = originalBlob.getAs('image/jpeg');
+          Logger.log(`✅ Cover successfully generated by "${modelName}". Size: ~${Math.round(jpegBlob.getBytes().length / 1024)} KB`);
+          return Utilities.base64Encode(jpegBlob.getBytes());
+        }
+      } else {
+        Logger.log(`⚠️ Model "${modelName}" is unavailable (Code: ${response.getResponseCode()}). Response: ${response.getContentText()}`);
+        Utilities.sleep(1500); 
+      }
+    } catch (e) {
+      Logger.log(`⚠️ Connection error with model "${modelName}": ${e.toString()}`);
+    }
+  }
+  
+  return null; 
 }
 
 function callPollinationsImageGen_(prompt) {
@@ -406,7 +429,7 @@ function normalizeStrictCustom_(str) {
 
 function translitCyrillicToLatinCustom_(text) {
   if (!text) return "";
-  const map = { 'а':'a','б':'b','в':'v','г':'h','д':'d','е':'je','ё':'jo','ж':'zh','з':'z','і':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ў':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ы':'y','ь':'','э':'e','ю':'ju','я':'ja','ґ':'g', 'ъ':'ie' };
+  const map = { 'а':'a','б':'b','в':'v','г':'h','д':'d','е':'je','ё':'jo','ж':'zh','з':'z','і':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ў':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ы':'y','ь':'','э':'e','ю':'ju','я':'ja','ґ':'g' };
   return text.split('').map(char => map[char] || char).join('');
 }
 
@@ -434,6 +457,7 @@ function compareStringsCustom_(first, second) {
 
 /**
  * Removes tracks from the playlist that have been listened to in the last N days.
+ * POINT DELETION (Does not overwrite the entire playlist, preserving "Date Added").
  * @param {string} playlistId - Spotify Playlist ID
  * @param {number} days - Number of history days to analyze
  */
@@ -452,9 +476,6 @@ function cleanPlaylistFromRecentTracks(playlistId, days) {
       return;
     }
     
-    const initialCount = currentTracks.length;
-    Logger.log(`Found ${initialCount} tracks in the playlist.`);
-    
     // Get listening history (from goofy cache)
     let recentTracks = RecentTracks.get(); 
     if (!recentTracks || recentTracks.length === 0) {
@@ -464,22 +485,24 @@ function cleanPlaylistFromRecentTracks(playlistId, days) {
     
     // Filter history by date (remove everything older than specified days)
     Filter.rangeDateRel(recentTracks, days, 0);
-    
-    // Create Set for fast lookup of listened IDs
     const recentIds = new Set(recentTracks.map(t => t.id));
     
-    // Keep only tracks that are NOT in history
-    const tracksToKeep = currentTracks.filter(t => !recentIds.has(t.id));
-    const finalCount = tracksToKeep.length;
-    const removedCount = initialCount - finalCount;
+    // Find TRACKS TO REMOVE (those that are in both the playlist and history)
+    const tracksToRemove = currentTracks.filter(t => recentIds.has(t.id));
     
-    if (removedCount > 0) {
-      Logger.log(`🗑️ Found ${removedCount} recently listened tracks. Removing...`);
-      Playlist.saveWithReplace({
-        id: playlistId,
-        tracks: tracksToKeep
-      });
-      Logger.log(`✅ Cleanup complete. Remaining tracks: ${finalCount}`);
+    if (tracksToRemove.length > 0) {
+      Logger.log(`🗑️ Found ${tracksToRemove.length} listened tracks. Removing only them...`);
+      
+      // Build array of objects in the format required by Spotify API
+      const urisToDelete = tracksToRemove.map(t => ({ uri: t.uri || `spotify:track:${t.id}` }));
+      
+      // Delete in chunks of 100 tracks (Spotify API limit)
+      for (let i = 0; i < urisToDelete.length; i += 100) {
+          const chunk = urisToDelete.slice(i, i + 100);
+          SpotifyRequest.deleteRequest(`${API_BASE_URL}/playlists/${playlistId}/tracks`, { tracks: chunk });
+      }
+      
+      Logger.log(`✅ Targeted cleanup complete. Removed: ${tracksToRemove.length} tracks.`);
     } else {
       Logger.log('✅ No matches found. All tracks are "fresh", nothing removed.');
     }
@@ -504,7 +527,7 @@ function applySmartSort(playlistId, preset = 'atmospheric') {
   try {
     // Check if FlowSort object exists
     if (typeof FlowSort === 'undefined' || !FlowSort.sortBalancedWave) {
-       Logger.log('❌ Error: FlowSort object not found. Ensure you have added the code from FlowSort.gs to your project.');
+       Logger.log('❌ Error: FlowSort object not found. Ensure the FlowSort.gs file exists and has no errors.');
        return;
     }
 
