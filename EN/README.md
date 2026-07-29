@@ -4,7 +4,7 @@ A Google Apps Script project that leverages **Google's Gemini AI** (Pro & Flash 
 
 This repository contains a set of add-on scripts for the [Goofy library](https://chimildic.github.io/goofy/) that enable advanced automation and smart playlist creation.
 
-## Key Features (Version 6.0 Enterprise)
+## Key Features (Version 6.1 Enterprise)
 
 -   **Playlist DNA Cloning:** Analyzes the mood, era, and genres of any existing playlist and creates its perfect continuation.
 -   **Data Safety & Mutexes:** Implemented a locking system (`LockService`). Generation and cleanup triggers will never overlap or corrupt your playlist data again.
