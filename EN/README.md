@@ -9,7 +9,7 @@ This repository contains a set of add-on scripts for the [Goofy library](https:/
 -   **Playlist DNA Cloning:** Analyzes the mood, era, and genres of any existing playlist and creates its perfect continuation.
 -   **Data Safety & Mutexes:** Implemented a locking system (`LockService`). Generation and cleanup triggers will never overlap or corrupt your playlist data again.
 -   **Point Deletion (Non-Destructive Cleanup):** The script removes listened tracks selectively via Spotify API, preserving the original "Date Added" timestamps and playlist metadata.
--   **Multi-Model AI (Cascade):** Built-in resilience. If the primary Gemini model (text or image) is overloaded, the script automatically falls back to secondary models or external APIs.
+-   **Multi-Model AI & Dual Provider (Vertex AI / AI Studio):** Built-in resilience with flexible provider routing. Supports **Google Cloud Vertex AI** (enabling the use of $300 in free GCP trial credits) and **Google AI Studio** (via free API Key). Automatic cascading fallback switches models seamlessly if any endpoint experiences outages or rate limits.
 -   **Bilingual Search:** Understands and searches for tracks in both Latin and Cyrillic with a custom anti-cover/tribute filter.
 
 ## Project Structure (Modular Architecture)
@@ -48,11 +48,18 @@ This guide will walk you through setting up the project from scratch.
 
 ---
 
-### Part 2: Gathering IDs and API Keys
+### Part 2: Gathering IDs and AI Provider Setup
 
 1.  **Spotify Playlist ID:** (Right-click your playlist -> Share -> Copy link). The ID is the characters after `playlist/`. You will need it for the target playlist variables.
-2.  **Google Gemini API Key:** Create a free key at **[Google AI Studio](https://aistudio.google.com/)**. *This is the only key you will need to run the entire system.*
+2.  **Choose & Configure Your AI Provider:**
 
+    *   **Option A (Recommended — Vertex AI with $300 Trial Credits):**
+        1. Create a project in [Google Cloud Console](https://console.cloud.google.com/).
+        2. Note down your GCP **Project ID**.
+        3. Open your Google Apps Script **Project Settings** (⚙️) -> **Google Cloud Platform (GCP) Project** -> Click **Change project** and enter your GCP Project ID.
+
+    *   **Option B (Free AI Studio API Key):**
+        1. Create a free API key at **[Google AI Studio](https://aistudio.google.com/)**.
 ---
 
 ### Part 3: Adding Scripts and FlowSort Algorithm
@@ -73,10 +80,17 @@ In your Google Apps Script project, click `+` (Add file -> Script) and create th
 ### Part 4: Final Configuration
 
 1. Go to **Project Settings** (⚙️) -> **Script Properties**.
-2. Add just one key:
-    *   Property: `GEMINI_API_KEY`
-    *   Value: your Google Gemini key.
-3. Save properties.
+2. Add the required properties based on your chosen provider:
+    *   If using **Vertex AI**:
+        *   Property: `GCP_PROJECT_ID`
+        *   Value: your Google Cloud Project ID.
+    *   If using **AI Studio**:
+        *   Property: `GEMINI_API_KEY`
+        *   Value: your Google Gemini API key.
+3. Open `AI_General.gs` and set the execution mode in `GLOBAL_AI_CONFIG.PROVIDER`:
+    *   `PROVIDER: 'VERTEX_AI'` — for routing requests through GCP Vertex AI (utilizing trial credits).
+    *   `PROVIDER: 'AI_STUDIO'` — for routing requests through the Gemini API Key.
+4. Save properties and script files.
 
 ---
 
