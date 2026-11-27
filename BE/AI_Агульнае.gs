@@ -428,4 +428,207 @@ function executeSmartSearch(rawAiTracks) {
       let match = findBestMatchCustom_(stage2Queries[i], stage2Results[i], stage2Originals[i]);
       if (match) {
         allFoundTracks.push(match);
-        Logger.log(`✅ [Узр 2] Знайшлі: "$
+        Logger.log(`✅ [Узр 2] Знайшлі: "${stage2Originals[i]}" -> ${match.artists[0].name} - ${match.name}`);
+      } else {
+        stage3Originals.push(stage2Originals[i]);
+        let parts = stage2Queries[i].split('-');
+        stage3Queries.push(parts.length > 1 ? parts[1].trim() : stage2Queries[i]);
+      }
+    }
+
+    if (stage3Queries.length > 0 && (Date.now() - searchStartMs) < MAX_SEARCH_MS) {
+      Logger.log(`\n--- УЗРОВЕНЬ 3: Толькі назва песні (${stage3Queries.length} трэкаў) ---`);
+      let stage3Results = fetchSpotifyTracksCustom_(stage3Queries);
+      for (let i = 0; i < stage3Queries.length; i++) {
+        let match = findBestMatchCustom_(stage3Queries[i], stage3Results[i], stage3Originals[i], true);
+        if (match) {
+          allFoundTracks.push(match);
+          Logger.log(`✅ [Узр 3] Знайшлі: "${stage3Originals[i]}" -> ${match.artists[0].name} - ${match.name}`);
+        } else {
+          notFoundQueries.push(stage3Originals[i]);
+        }
+      }
+    } else if (stage3Queries.length > 0) {
+      Logger.log('⏱️ Ліміт часу на пошук вычарпаны — прапускаем Узровень 3 і пераходзім да захавання.');
+    }
+  }
+
+  const uniqueTracks = [];
+  const seenIds = new Set();
+  allFoundTracks.forEach(t => {
+    if (!seenIds.has(t.id)) { seenIds.add(t.id); uniqueTracks.push(t); }
+  });
+
+  if (notFoundQueries.length > 0) {
+    Logger.log(`\n⚠️ Не знойдзена (галюцынацыі): ${notFoundQueries.length} трэкаў.`);
+  }
+
+  return uniqueTracks;
+}
+
+function fetchSpotifyTracksCustom_(queries) {
+  const CHUNK_SIZE = 25;
+  const allResults = [];
+
+  for (let i = 0; i < queries.length; i += CHUNK_SIZE) {
+    const chunk = queries.slice(i, i + CHUNK_SIZE);
+    const urls = chunk.map(q => `https://api.spotify.com/v1/search?q=${encodeURIComponent(q.substring(0, 100))}&type=track&limit=5`);
+    const chunkResults = SpotifyRequest.getAll(urls).map(res => {
+      if (res && res.tracks && res.tracks.items) return res.tracks.items;
+      if (res && res.items) return res.items;
+      return [];
+    });
+    allResults.push(...chunkResults);
+
+    if (i + CHUNK_SIZE < queries.length) {
+      Utilities.sleep(500);
+    }
+  }
+
+  return allResults;
+}
+
+function findBestMatchCustom_(query, tracks, originalQuery = null, isTitleOnly = false) {
+  if (!tracks || tracks.length === 0) return null;
+  let bestTrack = null;
+  let bestScore = 0;
+  let baseQuery = originalQuery || query;
+  let queryParts = baseQuery.split('-');
+  let qArtist = queryParts.length > 1 ? normalizeStrictCustom_(queryParts[0]) : "";
+  let qTitle = queryParts.length > 1 ? normalizeStrictCustom_(queryParts.slice(1).join('-')) : normalizeStrictCustom_(baseQuery);
+  let qNormFull = normalizeStrictCustom_(query);
+
+  for (let i = 0; i < Math.min(tracks.length, 5); i++) {
+    let track = tracks[i];
+    if (!track || !track.artists || track.artists.length === 0) continue;
+
+    let tArtist = normalizeStrictCustom_(track.artists[0].name);
+    let tTitle = normalizeStrictCustom_(track.name);
+    let tNormFull = normalizeStrictCustom_(`${track.artists[0].name} ${track.name}`);
+
+    let rawTrackName = track.name.toLowerCase();
+    let rawQuery = baseQuery.toLowerCase();
+    if (!rawQuery.includes("cover") && !rawQuery.includes("karaoke") && !rawQuery.includes("tribute")) {
+        if (rawTrackName.includes("karaoke") || rawTrackName.includes("tribute") || 
+            track.artists[0].name.toLowerCase().includes("karaoke") || 
+            track.artists[0].name.toLowerCase().includes("tribute")) {
+            continue; 
+        }
+    }
+
+    let score = 0;
+    if (qArtist && qTitle) {
+        let artistScore = compareStringsCustom_(qArtist, tArtist);
+        let titleScore = compareStringsCustom_(qTitle, tTitle);
+        if (artistScore < 0.4 && !tArtist.includes(qArtist) && !qArtist.includes(tArtist)) continue; 
+        if (titleScore < 0.4 && !tTitle.includes(qTitle) && !qTitle.includes(tTitle)) continue; 
+        score = (artistScore * 0.45) + (titleScore * 0.55);
+    } else {
+        score = compareStringsCustom_(qNormFull, tNormFull);
+    }
+
+    if (isTitleOnly && originalQuery) {
+      if (qArtist && !tArtist.includes(qArtist) && !qArtist.includes(tArtist)) score -= 0.5; 
+    }
+
+    if (score > bestScore) {
+      bestScore = score;
+      bestTrack = track;
+    }
+  }
+  return bestScore >= 0.65 ? bestTrack : null;
+}
+
+function normalizeStrictCustom_(str) {
+  if (!str) return "";
+  let s = str.toLowerCase().replace(/\s*[\(\[].*?[\)\]]\s*/g, ''); 
+  s = translitCyrillicToLatinCustom_(s);
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/[^a-z0-9]/g, '');
+}
+
+function translitCyrillicToLatinCustom_(text) {
+  if (!text) return "";
+  const map = {
+    'а':'a','б':'b','в':'v','г':'h','д':'d','е':'je','ё':'jo','ж':'zh','з':'z',
+    'і':'i','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p',
+    'р':'r','с':'s','т':'t','у':'u','ў':'u','ф':'f','х':'kh','ц':'ts','ч':'ch',
+    'ш':'sh','щ':'shch','ъ':'','ы':'y','ь':'','э':'e','ю':'ju','я':'ja','ґ':'g'
+  };
+  return text.split('').map(char => map[char] ?? char).join('');
+}
+
+function compareStringsCustom_(first, second) {
+  first = first.replace(/\s+/g, ''); second = second.replace(/\s+/g, '');
+  if (first === second) return 1; 
+  if (first.length < 2 || second.length < 2) return 0; 
+  let firstBigrams = new Map();
+  for (let i = 0; i < first.length - 1; i++) {
+    const bigram = first.substring(i, i + 2);
+    firstBigrams.set(bigram, (firstBigrams.get(bigram) || 0) + 1);
+  }
+  let intersectionSize = 0;
+  for (let i = 0; i < second.length - 1; i++) {
+    const bigram = second.substring(i, i + 2);
+    const count = firstBigrams.get(bigram) || 0;
+    if (count > 0) { firstBigrams.set(bigram, count - 1); intersectionSize++; }
+  }
+  return (2.0 * intersectionSize) / (first.length + second.length - 2);
+}
+
+// =========================================================================
+// 5. УНІВЕРСАЛЬНАЯ АЧЫСТКА ПЛЭЙЛІСТОЎ
+// =========================================================================
+
+function cleanPlaylistFromRecentTracks(playlistId, days) {
+  if (!playlistId) {
+    Logger.log('❌ Памылка: ID плэйліста не зададзены.');
+    return;
+  }
+  Logger.log(`🧹 Пачатак ачысткі плэйліста (ID: ${playlistId}). Аналіз за апошнія ${days} дзён...`);
+  try {
+    const currentTracks = Source.getPlaylistTracks('', playlistId);
+    if (!currentTracks || currentTracks.length === 0) return;
+    
+    let recentTracks = RecentTracks.get(); 
+    if (!recentTracks || recentTracks.length === 0) return;
+    
+    Filter.rangeDateRel(recentTracks, days, 0);
+    const recentIds = new Set(recentTracks.map(t => t.id));
+    
+    const tracksToRemove = currentTracks.filter(t => recentIds.has(t.id));
+    if (tracksToRemove.length > 0) {
+      const urisToDelete = tracksToRemove.map(t => ({ uri: t.uri || `spotify:track:${t.id}` }));
+      for (let i = 0; i < urisToDelete.length; i += 100) {
+          const chunk = urisToDelete.slice(i, i + 100);
+          SpotifyRequest.deleteRequest(`${API_BASE_URL}/playlists/${playlistId}/tracks`, { tracks: chunk });
+      }
+      Logger.log(`✅ Ачыстка кропкава завершана. Выдалена: ${tracksToRemove.length} трэкаў.`);
+    }
+  } catch (e) {
+    Logger.log(`❌ Памылка пры ачыстцы: ${e.toString()}`);
+  }
+}
+
+// =========================================================================
+// 6. ІНТЭГРАЦЫЯ FLOWSORT
+// =========================================================================
+
+function applySmartSort(playlistId, preset = 'atmospheric') {
+  if (!playlistId) return;
+  Logger.log(`🌊 Пачатак разумнага сартавання FlowSort для плэйліста (ID: ${playlistId})...`);
+  try {
+    if (typeof FlowSort === 'undefined' || !FlowSort.sortBalancedWave) return;
+    const tracks = Source.getPlaylistTracks('', playlistId);
+    if (!tracks || tracks.length < 4) return;
+
+    let weights = {};
+    if (preset === 'atmospheric') weights = { tempo: 0.40, harmony: 0.55, energy: 0.05, valence: 0.0 };
+    else if (preset === 'drive') weights = { tempo: 0.80, harmony: 0.15, energy: 0.05, valence: 0.0 };
+    else weights = { tempo: 0.50, harmony: 0.30, energy: 0.15, valence: 0.05 };
+
+    const sortedTracks = FlowSort.sortBalancedWave(tracks, { weights: weights });
+    Playlist.saveWithReplace({ id: playlistId, tracks: sortedTracks });
+  } catch (e) {
+    Logger.log(`❌ Памылка падчас сартавання: ${e.toString()}`);
+  }
+}
