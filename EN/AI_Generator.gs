@@ -48,11 +48,11 @@ function generateCustomPlaylist() {
     // --------------------------------------------------------
 
     // 1. Create prompt
-    let promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
+    const { systemInstruction, userPrompt } = createPromptFromTopic_(config.TOPIC_PROMPT);
 
     // 2. Call AI 
     Logger.log('🧠 Starting track list generation...');
-    const aiResult = callGeminiTextAPI(promptText);
+    const aiResult = callGeminiTextAPI(userPrompt, { systemInstruction });
     const rawAiTracks = parseAiResponse(aiResult.responseText);
     
     Logger.log(`AI suggested ${rawAiTracks.length} tracks.`);
@@ -123,42 +123,30 @@ function saveOrUpdateCustomPlaylist_(tracks) {
 }
 
 function createPromptFromTopic_(topic) {
-  return `
-<system_instruction>
-    <role>
-        You are an Elite Contextual Audio Architect. Your expertise lies in psychographic playlist sequencing — translating abstract moods, activities, or themes into highly cohesive, emotionally resonant acoustic experiences.
-    </role>
+  const total = GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST;
 
-    <objective>
-        Synthesize a highly specific, strictly curated playlist of EXACTLY ${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} tracks. The track selection must be absolutely subjugated to the user's requested theme/topic, acting as a flawless soundtrack for that exact context.
-    </objective>
+  const systemInstruction = `## Function
+Generate a cohesive thematic playlist of exactly ${total} real tracks available on Spotify, strictly matched to the target topic, activity, mood, and era.
 
-    <context_awareness>
-        - **Target Topic / Vibe:** "${topic}"
-        - Treat this topic not as a mere suggestion, but as an absolute acoustic law. Every single track must mathematically and emotionally align with the semantics of this topic.
-    </context_awareness>
+## Acoustic Profiling & Curation Criteria
+1. **Topic-Driven Acoustic Profiling:** Align every track to the musical parameters implied by the target topic:
+   - *Energy & BPM:* Match the required intensity (high-octane drive, steady focus, or ambient relaxation).
+   - *Instrumentation:* Choose fitting textures (electronic/synth-heavy, acoustic/organic, heavy guitars, or minimal beats).
+   - *Era & Genre:* Select sub-genres and eras that naturally fit the target vibe.
+2. **Atmospheric Consistency:** Maintain unbroken emotional alignment—never insert an upbeat pop track into a "Melancholy" playlist just because the artist is famous.
+3. **Deep Curation:** Balance recognized genre-appropriate anthems with high-quality underground gems.
 
-    <behavioral_guidelines>
-        1. **Topic-Driven Acoustic Profiling (CRITICAL):** Before selecting tracks, dynamically map the requested "${topic}" to specific musical parameters:
-           - *Energy & BPM:* Does the topic demand high-octane drive, steady focus, or ambient relaxation?
-           - *Instrumentation:* Should it be electronic/synth-heavy, acoustic/organic, heavy guitars, or minimal beats?
-           - *Era & Genre:* Select the sub-genres of music that naturally fit.
-        2. **Atmospheric Consistency:** Do not break the mood. If the topic is "Melancholy," do not insert an upbeat pop song just because the artist is famous. Every track must serve the primary emotional target.
-        3. **Deep Curation:** Balance recognized genre-appropriate anthems with high-quality underground gems to create a sophisticated texture.
-    </behavioral_guidelines>
+## Strict Constraints
+- **Verified Spotify Catalog Only:** Include only real, verifiable tracks with exact Spotify spelling (no self-transliteration). Omit version tags such as 'Live', 'Remastered', or 'Radio Edit'.
+- **Zero Duplicates:** Every entry in the ${total}-track list must be unique.
+- **Element Format:** Each array item must strictly follow "Artist - Track Name".`;
 
-    <strict_constraints>
-        * **EXACT COUNT:** You must return exactly ${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} tracks. No more, no less.
-        * **NO MARKDOWN:** Do NOT wrap the output in \`\`\`json or any other markdown formatting.
-        * **RAW OUTPUT:** Output ONLY a valid JSON array of strings. No conversational text, no explanations, no titles, no thoughts.
-        * **SCHEMA:**["Artist - Track Name", "Artist - Track Name"]
-    </strict_constraints>
+  const userPrompt = `## Target Topic / Vibe
+${topic}
 
-    <interaction_style>
-        Completely silent executor. You speak only in raw, unformatted JSON arrays.
-    </interaction_style>
-</system_instruction>
-`;
+Based on the target topic above, generate an array of exactly ${total} unique, real Spotify tracks formatted as "Artist - Track Name", preserving exact Spotify spelling, clean titles, and unbroken atmospheric consistency.`;
+
+  return { systemInstruction, userPrompt };
 }
 
 function cleanUpGenPlaylist() {
@@ -190,11 +178,11 @@ function generateTextGenToDrive() {
     const config = GENERATOR_CONFIG;
 
     // 1. Create prompt
-    let promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
+    const { systemInstruction, userPrompt } = createPromptFromTopic_(config.TOPIC_PROMPT);
 
     // 2. Call AI 
     Logger.log('🧠 Starting track list generation...');
-    const aiResult = callGeminiTextAPI(promptText);
+    const aiResult = callGeminiTextAPI(userPrompt, { systemInstruction });
     const rawAiTracks = parseAiResponse(aiResult.responseText);
      
     if (!rawAiTracks || rawAiTracks.length === 0) {
