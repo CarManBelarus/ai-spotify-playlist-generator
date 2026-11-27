@@ -148,4 +148,95 @@ function createTrackRecommendationPrompt_(tracksJsonString) {
 Раўнамерна размеркуй чатыры катэгорыі па ўсім спісе:
 1. **Core Matches (~${coreCount} трэкаў):** Малавядомыя песні (Deep Cuts, B-sides — не галоўныя хіты) любімых выканаўцаў карыстальніка, а таксама новыя падобныя па гучанні артысты, якіх карыстальнік яшчэ не ведае.
 2. **Pivots (~${pivotCount} трэкаў):** Сумежныя жанры і іншыя эпохі (напрыклад, калі база — індзі-рок, прапануй French Coldwave або Neo-Psychedelia) па прынцыпе "Best Of" — сусветна прызнаныя эталоны новага жанру.
-3. **Belarus Spotlight (~${belarusCount} трэкаў):** Беларуская музыка (сучасная або класіка), якая ідэальна пасуе да асноўнага вайбу (напрыклад: да пост-панку — Nürnberg / Molchat Doma
+3. **Belarus Spotlight (~${belarusCount} трэкаў):** Беларуская музыка (сучасная або класіка), якая ідэальна пасуе да асноўнага вайбу (напрыклад: да пост-панку — Nürnberg / Molchat Doma / Dlina Volny; да року — Мроя / Akute; да фолку — Vuraj / Relikt).
+4. **Genre Classics (~${classicCount} трэкаў):** Магутныя "якары" плэйліста — абсалютныя гімны жанраў, якія дамінуюць у ДНК карыстальніка (напр., "Love Will Tear Us Apart" для пост-панку).
+
+## Сезоннасць і кантэкст
+Аўтаматычна ўлічвай перададзеную бягучую дату, сезон і набліжэнне святаў (Каляды, Купалле, Дзяды і г.д.), мякка інтэгруючы адпаведны настрой у частку трэкаў без парушэння агульнай ДНК густу.
+
+## Крытэрыі якасці і жорсткія абмежаванні
+- **Крытычная забарона (NO RUSSIAN):** Поўная адсутнасць выканаўцаў з Расіі і рускамоўных песень расійскіх артыстаў.
+- **Без паўтораў:** Поўная адсутнасць трэкаў з Input DNA і дублікатаў унутры выніковага плэйліста.
+- **Толькі рэальныя трэкі Spotify:** Кожная пара "Выканаўца - Назва" павінна быць рэальным рэлізам у каталогу Spotify.
+- **Ачыстка назваў:** Без тэгаў 'Live', 'Remastered', 'Radio Edit' у назвах.
+- **Арфаграфія Spotify:** Лакальныя назвы гуртоў павінны быць напісаны так, як у Spotify, без уласнай транслітарацыі (калі ў Spotify кірыліца — "Мроя", "Палац"; калі лацінка — "Akute", "Nürnberg").
+- **Фармат элементаў:** Кожны радок у выніковым масіве строга ў выглядзе "Artist - Track Name" (напрыклад: "Depeche Mode - Enjoy the Silence", "Мроя - Я рок-музыкант", "Mariya Takeuchi - Plastic Love", "Nürnberg - Biessenhofen").`;
+
+  const userPrompt = `## Бягучая дата
+${formattedDate}
+
+## База густу карыстальніка (Input DNA)
+${tracksJsonString}
+
+На аснове Input DNA і сезоннага кантэксту на дату ${formattedDate} згенерыруй масіў дакладна з ${total} рэальных трэкаў у фармаце "Artist - Track Name": вытрымай прапорцыі (${coreCount} Core / ${pivotCount} Pivots / ${belarusCount} Belarus / ${classicCount} Classics), захавай дакладную арфаграфію Spotify без тэгаў версій, поўнасцю выключы паўторы з Input DNA і любых выканаўцаў з Расіі.`;
+
+  return { systemInstruction, userPrompt };
+}
+
+
+function cleanUpPlaylist() {
+  const lock = LockService.getScriptLock();
+  try {
+    // Калі ідзе генерацыя (займае 3-5 хвілін), ачыстка не павінна чакаць.
+    // Яна чакае толькі 2 секунды, і калі плэйліст заняты — проста прапускае гэты запуск.
+    lock.waitLock(2000); 
+  } catch (e) {
+    Logger.log('⏳ Плэйліст зараз абнаўляецца генератарам. Прапускаем ачыстку (яна аўтаматычна спрацуе па наступным трыгеры).');
+    return;
+  }
+
+  try {
+    const days = AI_CONFIG.CLEANUP_LISTENED_TRACKS_OLDER_THAN_DAYS || 60;
+    // Выклікаем універсальную функцыю з AI_Агульнае.gs
+    cleanPlaylistFromRecentTracks(AI_CONFIG.SPOTIFY_PLAYLIST_ID, days);
+  } finally {
+    // Здымаем блакіроўку
+    lock.releaseLock();
+  }
+}
+
+
+/**
+ * Бясплатны (ручны) метад генерацыі.
+ * Збірае гісторыю, просіць AI згенераваць спіс і захоўвае яго ў .txt файл на Google Drive.
+ */
+function generateTextMixToDrive() {
+  try {
+    Logger.log('Пачатак генерацыі тэкставага плэйліста...');
+    
+    // 1. Чытаем базу густу (Лайкі)
+    const allTracks = Cache.read('SavedTracks.json');
+    if (!allTracks || allTracks.length === 0) {
+      Logger.log('⚠️ Файл SavedTracks.json пусты або не знойдзены.');
+      return;
+    }
+    
+    // 2. Бярэм выпадковыя трэкі для аналізу і сціскаем
+    const randomTracks = Selector.sliceRandom(allTracks, AI_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI);
+    const compactTracks = compactTracksForAi_(randomTracks);
+    const { systemInstruction, userPrompt } = createTrackRecommendationPrompt_(JSON.stringify(compactTracks));
+    
+    // 3. Выклікаем Gemini
+    Logger.log('🧠 Зварот да AI...');
+    const aiResult = callGeminiTextAPI(userPrompt, { systemInstruction });
+    const rawAiTracks = parseAiResponse(aiResult.responseText);
+    
+    if (!rawAiTracks || rawAiTracks.length === 0) {
+      Logger.log('⚠️ AI не вярнуў трэкі. Магчыма, памылка парсінгу.');
+      return;
+    }
+    
+    Logger.log(`✅ AI прапанаваў ${rawAiTracks.length} трэкаў.`);
+    
+    // 4. Захоўваем як тэкставы файл у Google Drive (тэчка "Goofy Data")
+    const fileName = 'AI_Daily_Mix.txt';
+    const textContent = rawAiTracks.join('\n'); // Злучаем масіў радкоў з пераносам радка
+    
+    Cache.write(fileName, textContent);
+    
+    Logger.log(`🎉 Гатова! Файл "${fileName}" паспяхова захаваны ў вашым Google Drive (шукайце ў тэчцы "Goofy Data" ці падтэчцы з вашым ID).`);
+
+  } catch (error) {
+    Logger.log(`❌ КРЫТЫЧНАЯ ПАМЫЛКА: ${error.toString()}`);
+  }
+}
