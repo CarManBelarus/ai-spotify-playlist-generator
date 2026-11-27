@@ -16,6 +16,22 @@ const AI_CONFIG = {
   SMART_SORT_PRESET: 'atmospheric' // 'atmospheric', 'drive', 'radio'
 };
 
+/**
+ * Compacts raw track objects from SavedTracks.json into "Artist - Track Name" strings
+ * to save input tokens and speed up API responses.
+ */
+function compactTracksForAi_(tracks) {
+  return tracks
+    .map(item => {
+      if (typeof item === 'string') return item;
+      const t = item && item.track ? item.track : item;
+      const artist = t?.artists?.[0]?.name || t?.artist || '';
+      const title = t?.name || t?.title || '';
+      return artist && title ? `${artist} - ${title}` : null;
+    })
+    .filter(Boolean);
+}
+
 function generateAndCreateSpotifyPlaylist() {
   const lock = LockService.getScriptLock();
   try {
@@ -40,13 +56,14 @@ function generateAndCreateSpotifyPlaylist() {
     Logger.log(`There is free space in the playlist (${currentTracks.length} of ${AI_CONFIG.MAX_PLAYLIST_SIZE}). Continuing...`);
     // ------------------------------------------------------------
 
-    // 1. Get tracks
+    // 1. Get and compact tracks
     const allTracks = Cache.read('SavedTracks.json');
     const randomTracks = Selector.sliceRandom(allTracks, AI_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI);
-    const promptText = createTrackRecommendationPrompt_(JSON.stringify(randomTracks));
+    const compactTracks = compactTracksForAi_(randomTracks);
+    const { systemInstruction, userPrompt } = createTrackRecommendationPrompt_(JSON.stringify(compactTracks));
 
     // 2. Call AI from AI_General.gs
-    const aiResult = callGeminiTextAPI(promptText);
+    const aiResult = callGeminiTextAPI(userPrompt, { systemInstruction });
     const rawAiTracks = parseAiResponse(aiResult.responseText);
     
     if (rawAiTracks.length === 0) return;
@@ -122,62 +139,35 @@ function createTrackRecommendationPrompt_(tracksJsonString) {
   const localCount = Math.round(total * 0.15);
   const classicCount = total - coreCount - pivotCount - localCount;
 
-return `
-<system_instruction>
-    <role>
-        You are an elite Music Curator and Spotify Data Analyst. Your expertise combines deep knowledge of global and local music history with an algorithmic understanding of the user's "Taste DNA". You don't just create song lists, but authorial musical journeys with flawless developmental logic.
-    </role>
+  const systemInstruction = `## Function
+Generate a personalized discovery playlist of exactly ${total} real tracks available on Spotify based on the user's listening history (Input DNA) and current seasonal/calendar context.
 
-    <objective>
-        Analyze the user's listening history, determine the current calendar/seasonal context, and generate a perfectly balanced playlist of exactly ${total} tracks formatted strictly as a JSON array.
-    </objective>
+## Mixing Strategy (exact proportions for ${total} tracks)
+Distribute all four categories evenly across the playlist:
+1. **Core Matches (~${coreCount} tracks):** Lesser-known songs (Deep Cuts, B-sides—not main hits) by the user's favorite artists from Input DNA, plus new similar-sounding artists not yet present in the sample.
+2. **Pivots (~${pivotCount} tracks):** Adjacent genres or other eras (e.g., if the base is indie rock, suggest French Coldwave or Neo-Psychedelia) using the "Best Of" principle—globally recognized benchmarks of the new genre.
+3. **Local Spotlight (~${localCount} tracks):** Music from the user's local or culturally adjacent scene that naturally fits the dominant vibe of their Input DNA.
+4. **Genre Classics (~${classicCount} tracks):** Defining genre anthems that anchor the dominant styles in the user's Input DNA.
 
-    <context_awareness>
-        - **Current Date:** ${formattedDate}.
-        - **Seasonality & Holidays:** Automatically identify the current season and approaching holidays. Integrate the appropriate festive or seasonal mood into some of the tracks (e.g., warm soul/jazz in winter, energetic indie in summer), but maintain overall alignment with the Taste DNA.
-        - **Taste Base (DNA):** The following JSON contains the user's listening history. Use this as your only compass to determine genres, eras, and temperament.
-          [Input DNA]: ${tracksJsonString}
-    </context_awareness>
+## Seasonality & Calendar Context
+Identify the current season and approaching holidays from the provided Current Date and subtly weave an appropriate seasonal mood into part of the selection (e.g., warm soul/jazz in winter, energetic indie in summer) while maintaining overall alignment with the Taste DNA.
 
-    <behavioral_guidelines>
-        During playlist generation, use the following mixing strategy (proportions must be followed as closely as possible for ${total} tracks):
+## Quality Criteria & Strict Constraints
+- **No Repeats:** Exclude every track already present in Input DNA and ensure zero duplicates within the output list.
+- **Verified Spotify Catalog Only:** Include only real, verifiable tracks released on Spotify.
+- **Clean Titles:** Omit version tags such as 'Live', 'Remastered', or 'Radio Edit'.
+- **Exact Spotify Spelling:** Write artist and band names exactly as listed on Spotify with no self-transliteration.
+- **Element Format:** Each array item must strictly follow "Artist - Track Name" (e.g., "Depeche Mode - Enjoy the Silence", "Mariya Takeuchi - Plastic Love", "Nürnberg - Biessenhofen").`;
 
-        1. **Core Matches (~${coreCount} tracks): The Deep Comfort Zone.**
-           - Look for lesser-known songs (Deep Cuts, B-sides) of the user's favorite artists. Do not add their main hits.
-           - Find new, similar-sounding artists the user doesn't know yet.
-        
-        2. **Pivots (~${pivotCount} tracks): A Bold Step Sideways.**
-           - Expand horizons through adjacent genres or other eras (e.g., if the base is indie rock, suggest French Coldwave or Neo-Psychedelia).
-           - Use the "Best Of" principle here: provide only globally recognized benchmarks of the new genre so the user can immediately understand it.
-        
-        3. **Local Spotlight (~${localCount} tracks): Regional Context.**
-           - Music from the user's local or culturally adjacent scene that PERFECTLY matches the main vibe (DNA).
-           - This should not look like a random insertion, but a natural continuation of their taste profile.
-        
-        4. **Genre Classics (~${classicCount} tracks): Genre Anthems.**
-           - Powerful "anchors" of the playlist. Absolute anthems of the genres that dominate the user's DNA.
-    </behavioral_guidelines>
+  const userPrompt = `## Current Date
+${formattedDate}
 
-    <strict_constraints>
-        * **NO REPEATS:** No track from [Input DNA] should appear in the final playlist.
-        * **CLEAN TITLES:** Do not use tags like 'Live', 'Remastered', 'Radio Edit' in track titles.
-        * **SPOTIFY SPELLING:** Band names must be written EXACTLY AS IN SPOTIFY. Do not make your own transliteration. 
-        * **Total Size:** The final playlist must consist of exactly ${total} tracks.
-    </strict_constraints>
+## Listening History (Input DNA)
+${tracksJsonString}
 
-    <output_format>
-        OUTPUT ONLY VALID JSON. 
-        Do not add any introductory words, explanations, or greetings. 
-        The format must be strictly an array of strings: ["Artist - Track Name"].
-        
-        Example of expected output:[
-          "Depeche Mode - Enjoy the Silence",
-          "Mariya Takeuchi - Plastic Love",
-          "Nürnberg - Biessenhofen"
-        ]
-    </output_format>
-</system_instruction>
-`;
+Based on the Input DNA and seasonal context for ${formattedDate}, generate an array of exactly ${total} unique, real Spotify tracks formatted as "Artist - Track Name" following the mixing proportions (${coreCount} Core / ${pivotCount} Pivots / ${localCount} Local Spotlight / ${classicCount} Classics), with exact Spotify spelling, clean titles, and zero tracks repeated from Input DNA.`;
+
+  return { systemInstruction, userPrompt };
 }
 
 function cleanUpPlaylist() {
@@ -216,13 +206,14 @@ function generateTextMixToDrive() {
       return;
     }
     
-    // 2. Take random tracks for analysis
-    const randomTracks = Selector.sliceRandom(allTracks, 500);
-    const promptText = createTrackRecommendationPrompt_(JSON.stringify(randomTracks));
+    // 2. Take random tracks for analysis and compact them
+    const randomTracks = Selector.sliceRandom(allTracks, AI_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI);
+    const compactTracks = compactTracksForAi_(randomTracks);
+    const { systemInstruction, userPrompt } = createTrackRecommendationPrompt_(JSON.stringify(compactTracks));
     
     // 3. Call Gemini
     Logger.log('🧠 Requesting AI...');
-    const aiResult = callGeminiTextAPI(promptText);
+    const aiResult = callGeminiTextAPI(userPrompt, { systemInstruction });
     const rawAiTracks = parseAiResponse(aiResult.responseText);
     
     if (!rawAiTracks || rawAiTracks.length === 0) {
