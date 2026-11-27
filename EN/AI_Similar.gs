@@ -48,11 +48,11 @@ function generatePlaylistFromSourcePlaylist() {
     // 2. Sample preparation and prompt creation (Token Optimization)
     const randomSample = Selector.sliceRandom(sourceTracks, CLONE_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI);
     const compactSampleList = randomSample.map(t => `${t.artists[0].name} - ${t.name}`);
-    const promptText = createClonePrompt_(sourcePlaylistName, JSON.stringify(compactSampleList));
+    const { systemInstruction, userPrompt } = createClonePrompt_(sourcePlaylistName, JSON.stringify(compactSampleList));
 
     // 3. Requesting global AI engine
     Logger.log('🧠 Sending playlist DNA for AI analysis...');
-    const aiResult = callGeminiTextAPI(promptText);
+    const aiResult = callGeminiTextAPI(userPrompt, { systemInstruction });
     const rawAiTracks = parseAiResponse(aiResult.responseText);
     
     if (!rawAiTracks || rawAiTracks.length === 0) {
@@ -83,7 +83,7 @@ function generatePlaylistFromSourcePlaylist() {
 }
 
 /**
- * Builds a system prompt for the model based on the playlist's DNA.
+ * Builds the system instruction and user prompt based on the playlist's DNA.
  */
 function createClonePrompt_(playlistName, tracksJsonString) {
   const total = CLONE_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST;
@@ -91,35 +91,29 @@ function createClonePrompt_(playlistName, tracksJsonString) {
   const groupB = Math.round(total * 0.20); // 20%
   const groupC = total - groupA - groupB;  // 20%
 
-  return `
-<system_instruction>
-    <role>
-        You are an Elite Music Curator and audio engineer. Your specialization is creating playlist-journeys based on the deep psycho-acoustic analysis of a given musical DNA.
-    </role>
+  const systemInstruction = `## Function
+Generate a continuation playlist of exactly ${total} real tracks available on Spotify based on the genres, era, tempo, and emotional character of the provided source playlist (Source DNA).
 
-    <objective>
-        Analyze the source playlist "${playlistName}" and generate a new list of exactly ${total} tracks that will serve as a logical, yet unexpected continuation of the original.
-    </objective>
+## Mixing Strategy (for ${total} tracks)
+Distribute all three categories evenly throughout the playlist (do not group them into blocks):
+1. **Group A — Expansion (~${groupA} tracks):** Exact match with the genre and mood of the source playlist; well-known and respected artists in this direction.
+2. **Group B — Deepening (~${groupB} tracks):** Hidden gems (B-sides, lesser-known bands of the same style or era).
+3. **Group C — Evolution (~${groupC} tracks):** Adjacent genres and sonic bridges—tracks that resonate with the Source DNA while belonging to a different era or style.
 
-    <context_awareness>
-        [Source DNA]: The following array contains tracks from the original playlist. Determine its main genres, era, tempo, and emotional charge.
-        ${tracksJsonString}
-    </context_awareness>
+## Quality Criteria & Strict Constraints
+- **Zero Duplicates:** Exclude every track and every artist already present in Source DNA, and ensure zero duplicates within the output list.
+- **Verified Spotify Catalog Only:** Include only real, verifiable releases with exact Spotify spelling; omit version tags such as 'Live', 'Remastered', or 'Radio Edit'.
+- **Element Format:** Each array item must strictly follow "Artist - Track Name".`;
 
-    <behavioral_guidelines>
-        Build the final mix by intellectually blending three categories (distribute them evenly throughout the playlist, do not group them):
-        1. **Group A: Expansion (~${groupA} tracks):** Perfect match with the genre and mood of the source playlist. Well-known and respected artists in this direction.
-        2. **Group B: Deepening (~${groupB} tracks):** "Hidden gems" (B-sides, lesser-known bands of the same style or era).
-        3. **Group C: Evolution (~${groupC} tracks):** Adjacent genres and "bridges". Tracks that sonically resonate with the DNA but belong to a different era or style (showcasing taste evolution).
-    </behavioral_guidelines>
+  const userPrompt = `## Source Playlist
+Name: "${playlistName}"
 
-    <strict_constraints>
-        * **NO DUPLICATES:** You are STRICTLY FORBIDDEN from including any track or artist that is already present in the [Source DNA].
-        * **OUTPUT FORMAT:** Output exclusively a JSON array of strings. No markdown, no introductory words, no comments.
-        * **PRECISION:** The format of each string must strictly be "Artist - Track Name". The number of elements must be exactly ${total}.
-    </strict_constraints>
-</system_instruction>
-`;
+## Source DNA
+${tracksJsonString}
+
+Based on the Source DNA of "${playlistName}", generate an array of exactly ${total} unique, real Spotify tracks formatted as "Artist - Track Name" (evenly blending ${groupA} Expansion / ${groupB} Deepening / ${groupC} Evolution), completely excluding every track and every artist present in Source DNA.`;
+
+  return { systemInstruction, userPrompt };
 }
 
 /**
