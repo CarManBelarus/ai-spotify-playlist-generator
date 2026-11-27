@@ -49,11 +49,11 @@ function generatePlaylistFromSourcePlaylist() {
     // 2. Падрыхтоўка выбаркі і стварэнне промпту (Аптымізацыя токенаў)
     const randomSample = Selector.sliceRandom(sourceTracks, CLONE_CONFIG.TRACK_SAMPLE_SIZE_FOR_AI);
     const compactSampleList = randomSample.map(t => `${t.artists[0].name} - ${t.name}`);
-    const promptText = createClonePrompt_(sourcePlaylistName, JSON.stringify(compactSampleList));
+    const { systemInstruction, userPrompt } = createClonePrompt_(sourcePlaylistName, JSON.stringify(compactSampleList));
 
     // 3. Зварот да глабальнага AI-рухавіка
     Logger.log('🧠 Адпраўка ДНК плэйліста на аналіз мадэлі...');
-    const aiResult = callGeminiTextAPI(promptText);
+    const aiResult = callGeminiTextAPI(userPrompt, { systemInstruction });
     const rawAiTracks = parseAiResponse(aiResult.responseText);
     
     if (!rawAiTracks || rawAiTracks.length === 0) {
@@ -84,7 +84,7 @@ function generatePlaylistFromSourcePlaylist() {
 }
 
 /**
- * Фармуе сістэмны промпт для мадэлі на аснове ДНК плэйліста.
+ * Фармуе сістэмны промпт і запыт карыстальніка для мадэлі на аснове ДНК плэйліста.
  */
 function createClonePrompt_(playlistName, tracksJsonString) {
   const total = CLONE_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST;
@@ -92,35 +92,29 @@ function createClonePrompt_(playlistName, tracksJsonString) {
   const groupB = Math.round(total * 0.20); // 20%
   const groupC = total - groupA - groupB;  // 20%
 
-  return `
-<system_instruction>
-    <role>
-        Ты — Элітарны Музычны Куратар і гукавы інжынер. Твая спецыялізацыя — стварэнне плэйлістоў-падарожжаў на аснове псіхаакустычнага аналізу зададзенай музычнай ДНК.
-    </role>
+  const systemInstruction = `## Функцыя
+Сфарміраваць плэйліст-прадаўжэнне дакладна з ${total} рэальных трэкаў каталога Spotify на аснове аналізу жанраў, эпохі, тэмпу і эмацыйнага характару зыходнага плэйліста (Source DNA).
 
-    <objective>
-        Прааналізаваць зыходны плэйліст "${playlistName}" і згенераваць новы спіс з дакладна ${total} трэкаў, які будзе з'яўляцца лагічным, але нечаканым прадаўжэннем арыгінала.
-    </objective>
+## Стратэгія міксавання (для ${total} трэкаў)
+Раўнамерна перамяшай тры катэгорыі па ўсім плэйлісце (не групуй па блоках):
+1. **Група A — Пашырэнне (~${groupA} трэкаў):** Дакладнае трапленне ў жанр і настрой зыходнага плэйліста; вядомыя і шануемыя выканаўцы ў гэтым кірунку.
+2. **Група B — Паглыбленне (~${groupB} трэкаў):** "Схаваныя жамчужыны" (B-sides, менш вядомыя гурты таго ж стылю або эпохі).
+3. **Група C — Развіццё (~${groupC} трэкаў):** Сумежныя жанры і "масткі" — трэкі, якія гукава перагукаюцца з ДНК, але належаць да іншай эпохі ці стылю.
 
-    <context_awareness>
-        [Зыходная ДНК]: Наступны масіў утрымлівае трэкі з арыгінальнага плэйліста. Вызнач яго асноўныя жанры, эпоху, тэмп і эмацыйны зарад.
-        ${tracksJsonString}
-    </context_awareness>
+## Крытэрыі якасці і жорсткія абмежаванні
+- **Поўная ўнікальнасць:** Поўная адсутнасць любых трэкаў і любых выканаўцаў, якія ўжо прысутнічаюць у Source DNA, а таксама дублікатаў унутры выніку.
+- **Толькі рэальныя трэкі Spotify:** Выкарыстоўвай выключна рэальныя рэлізы з дакладнай арфаграфіяй Spotify, без тэгаў 'Live', 'Remastered', 'Radio Edit'.
+- **Фармат элементаў:** Кожны элемент масіву строга ў выглядзе "Artist - Track Name".`;
 
-    <behavioral_guidelines>
-        Пабудуй фінальны мікс, інтэлектуальна змешваючы тры катэгорыі (не групаваць, а раўнамерна размеркаваць па плэйлісце):
-        1. **Група A: Пашырэнне (~${groupA} трэкаў):** Ідэальнае трапленне ў жанр і настрой зыходнага плэйліста. Вядомыя і шануемыя артысты ў гэтым кірунку.
-        2. **Група B: Паглыбленне (~${groupB} трэкаў):** "Схаваныя жамчужыны" (B-sides, менш вядомыя гурты таго ж стылю або эпохі).
-        3. **Група C: Развіццё (~${groupC} трэкаў):** Сумежныя жанры і "масткі". Трэкі, якія гукава перагукаюцца з ДНК, але належаць да іншай эпохі ці стылю (паказваюць эвалюцыю густу).
-    </behavioral_guidelines>
+  const userPrompt = `## Зыходны плэйліст
+Назва: "${playlistName}"
 
-    <strict_constraints>
-        * **БЕЗ ДУБЛІКАТАЎ:** КАТЭГАРЫЧНА забаронена ўключаць любы трэк або артыста, які ўжо прысутнічае ў [Зыходная ДНК].
-        * **ФАРМАТ ВЫВАДУ:** Выключна JSON-масіў радкоў. Ніякага маркдаўна, уводных слоў ці каментарыяў.
-        * **Дакладнасць:** Фармат кожнага радка павінен быць строга "Artist - Track Name". Колькасць элементаў — дакладна ${total}.
-    </strict_constraints>
-</system_instruction>
-`;
+## Зыходная ДНК (Source DNA)
+${tracksJsonString}
+
+На аснове Source DNA плэйліста "${playlistName}" згенерыруй масіў дакладна з ${total} рэальных трэкаў у фармаце "Artist - Track Name" (раўнамерна змяшаўшы ${groupA} Пашырэнне / ${groupB} Паглыбленне / ${groupC} Развіццё), цалкам выключыўшы любыя трэкі і любых выканаўцаў, прысутных у Source DNA.`;
+
+  return { systemInstruction, userPrompt };
 }
 
 /**
