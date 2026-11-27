@@ -192,4 +192,21 @@ function generateTextGenToDrive() {
     const rawAiTracks = parseAiResponse(aiResult.responseText);
      
     if (!rawAiTracks || rawAiTracks.length === 0) {
-      Logger.log('⚠️ AI не в
+      Logger.log('⚠️ AI не вярнуў трэкі. Магчыма, памылка парсінгу.');
+      return;
+    }
+    
+    Logger.log(`✅ AI прапанаваў ${rawAiTracks.length} трэкаў.`);
+    
+    // 3. Захоўваем як тэкставы файл у Google Drive (тэчка "Goofy Data")
+    const fileName = 'AI_Topic_Mix.txt';
+    const textContent = rawAiTracks.join('\n'); // Злучаем масіў радкоў з пераносам радка
+    
+    Cache.write(fileName, textContent);
+    
+    Logger.log(`🎉 Гатова! Файл "${fileName}" паспяхова захаваны ў вашым Google Drive (шукайце ў тэчцы "Goofy Data" ці падтэчцы з вашым ID).`);
+
+  } catch (error) {
+    Logger.log(`❌ КРЫТЫЧНАЯ ПАМЫЛКА: ${error.toString()}`);
+  }
+}
