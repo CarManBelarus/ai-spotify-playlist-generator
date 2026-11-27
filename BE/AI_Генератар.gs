@@ -37,7 +37,7 @@ function generateCustomPlaylist() {
     const config = GENERATOR_CONFIG;
     Logger.log(`🚀 Запуск генератара. Рэжым: ${config.MODE}, Метад: ${config.UPDATE_METHOD}`);
     
-        // --- НОВАЯ ЛОГІКА: Правяраем памер перад генерацыяй ---
+    // --- НОВАЯ ЛОГІКА: Правяраем памер перад генерацыяй ---
     if (config.ACTION === 'UPDATE_EXISTING' && config.UPDATE_METHOD === 'APPEND') {
       const currentTracks = Source.getPlaylistTracks('', config.TARGET_PLAYLIST_ID);
       if (currentTracks.length >= config.MAX_PLAYLIST_SIZE) {
@@ -49,19 +49,17 @@ function generateCustomPlaylist() {
     }
     // --------------------------------------------------------
 
-
-
     // 1. Ствараем промпт
-    let promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
+    const { systemInstruction, userPrompt } = createPromptFromTopic_(config.TOPIC_PROMPT);
 
-    // 2. Звяртаемся да AI (выкарыстоўваем функцыю з main.gs)
+    // 2. Звяртаемся да AI (выкарыстоўваем функцыю з AI_Агульнае.gs)
     Logger.log('🧠 Пачатак генерацыі спісу трэкаў...');
-    const aiResult = callGeminiTextAPI(promptText);
+    const aiResult = callGeminiTextAPI(userPrompt, { systemInstruction });
     const rawAiTracks = parseAiResponse(aiResult.responseText);
     
     Logger.log(`AI прапанаваў ${rawAiTracks.length} трэкаў.`);
 
-    // 3. Разумны пошук (выкарыстоўваем функцыю з main.gs)
+    // 3. Разумны пошук (выкарыстоўваем функцыю з AI_Агульнае.gs)
     const foundTracks = executeSmartSearch(rawAiTracks);
     Logger.log(`Фінальна гатова да захавання: ${foundTracks.length} унікальных трэкаў.`);
 
@@ -69,7 +67,7 @@ function generateCustomPlaylist() {
     
     // 4. Захаванне і вокладка
     saveOrUpdateCustomPlaylist_(foundTracks);
-    generateAndApplyCover(config.TARGET_PLAYLIST_ID, foundTracks); // з main.gs
+    generateAndApplyCover(config.TARGET_PLAYLIST_ID, foundTracks);
 
     // ВЫКЛІК САРТАВАННЯ
     if (config.SMART_SORT_ENABLED) {
@@ -127,46 +125,33 @@ function saveOrUpdateCustomPlaylist_(tracks) {
 }
 
 function createPromptFromTopic_(topic) {
-  return `
-<system_instruction>
-    <role>
-        You are an Elite Contextual Audio Architect and the foremost expert in the Belarusian music scene (historical and contemporary). Your expertise lies in psychographic playlist sequencing — translating abstract moods, activities, or themes into highly cohesive, emotionally resonant acoustic experiences.
-    </role>
+  const total = GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST;
 
-    <objective>
-        Synthesize a highly specific, strictly curated playlist of EXACTLY ${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} tracks. The track selection must be absolutely subjugated to the user's requested theme/topic, acting as a flawless soundtrack for that exact context, while maintaining absolute adherence to linguistic constraints.
-    </objective>
+  const systemInstruction = `## Function
+Generate a cohesive thematic playlist of exactly ${total} real tracks available on Spotify, strictly matched to the target topic, mood, and Belarusian linguistic requirements.
 
-    <context_awareness>
-        - **Target Topic / Vibe:** "${topic}"
-        - Treat this topic not as a mere suggestion, but as an absolute acoustic law. Every single track must mathematically and emotionally align with the semantics of this topic.
-    </context_awareness>
+## Acoustic Profiling & Curation Criteria
+1. **Topic-Driven Acoustic Profiling:** Align every track to the musical parameters implied by the target topic:
+   - *Energy & BPM:* Match the required intensity (high-octane drive, steady focus, or ambient relaxation).
+   - *Instrumentation:* Choose fitting textures (electronic/synth-heavy, acoustic/organic, heavy guitars, or minimal beats).
+   - *Era & Genre:* Select sub-genres of Belarusian music (historical and contemporary) that naturally fit (e.g., for "Night City Drive" use Synthwave/Coldwave/Post-Punk such as Dlina Volny or Molchat Doma; for "Cozy Winter Morning" use Indie Folk/Acoustic such as Naviband or Vuraj).
+2. **Atmospheric Consistency:** Maintain unbroken emotional alignment—never insert a track that breaks the target mood for artist popularity.
+3. **Deep Curation:** Balance recognized genre-appropriate anthems with high-quality underground gems.
+4. **Linguistic Purity:** Restrict selection entirely to tracks with Belarusian lyrics, or purely instrumental tracks fitting the target topic.
 
-    <behavioral_guidelines>
-        1. **Topic-Driven Acoustic Profiling (CRITICAL):** Before selecting tracks, dynamically map the requested "${topic}" to specific musical parameters:
-           - *Energy & BPM:* Does the topic demand high-octane drive, steady focus, or ambient relaxation?
-           - *Instrumentation:* Should it be electronic/synth-heavy, acoustic/organic, heavy guitars, or minimal beats?
-           - *Era & Genre:* Select the sub-genres of Belarusian music that naturally fit (e.g., if topic is "Night City Drive," strictly use Synthwave/Coldwave/Post-Punk like Dlina Volny or Molchat Doma. If "Cozy Winter Morning," strictly use Indie Folk/Acoustic like Naviband or Vuraj).
-        2. **Atmospheric Consistency:** Do not break the mood. If the topic is "Melancholy," do not insert an upbeat pop song just because the artist is famous. Every track must serve the primary emotional target.
-        3. **Deep Curation:** Balance recognized genre-appropriate anthems with high-quality underground gems to create a sophisticated texture.
-        4. **Linguistic Purity:** You are restricted entirely to tracks where the lyrics are in the Belarusian language, or purely instrumental tracks that perfectly fit the "${topic}".
-    </behavioral_guidelines>
+## Strict Constraints
+- **Absolute Language Firewall:** Zero Russian language—exclude all tracks with Russian lyrics and all artists primarily associated with the Russian music scene.
+- **Verified Spotify Catalog Only:** Include only real, verifiable tracks with exact Spotify spelling (no self-transliteration; preserve native Cyrillic/Latin as listed on Spotify). Omit version tags such as 'Live', 'Remastered', or 'Radio Edit'.
+- **Zero Duplicates:** Every entry in the ${total}-track list must be unique.
+- **Element Format:** Each array item must strictly follow "Artist - Track Name".`;
 
-    <strict_constraints>
-        * **ABSOLUTE LANGUAGE FIREWALL:** ZERO Russian language. DO NOT include any track with Russian lyrics. DO NOT include artists primarily associated with the Russian scene. This is a critical failure condition.
-        * **EXACT COUNT:** You must return exactly ${GENERATOR_CONFIG.NUMBER_OF_TRACKS_TO_REQUEST} tracks. No more, no less.
-        * **NO MARKDOWN:** Do NOT wrap the output in \`\`\`json or any other markdown formatting.
-        * **RAW OUTPUT:** Output ONLY a valid JSON array of strings. No conversational text, no explanations, no titles, no thoughts.
-        * **SCHEMA:**["Artist - Track Name", "Artist - Track Name"]
-    </strict_constraints>
+  const userPrompt = `## Target Topic / Vibe
+${topic}
 
-    <interaction_style>
-        Completely silent executor. You speak only in raw, unformatted JSON arrays.
-    </interaction_style>
-</system_instruction>
-`;
+Based on the target topic above, generate an array of exactly ${total} unique, real Spotify tracks formatted as "Artist - Track Name" (Belarusian lyrics or fitting instrumentals only), preserving exact Spotify spelling, clean titles, unbroken mood consistency, and zero Russian language or Russian scene artists.`;
+
+  return { systemInstruction, userPrompt };
 }
-
 
 
 function cleanUpGenPlaylist() {
@@ -196,33 +181,15 @@ function cleanUpGenPlaylist() {
  */
 function generateTextGenToDrive() {
   try {
-
     const config = GENERATOR_CONFIG;
 
     // 1. Ствараем промпт
-    let promptText = createPromptFromTopic_(config.TOPIC_PROMPT);
+    const { systemInstruction, userPrompt } = createPromptFromTopic_(config.TOPIC_PROMPT);
 
-    // 2. Звяртаемся да AI (выкарыстоўваем функцыю з main.gs)
+    // 2. Звяртаемся да AI (выкарыстоўваем функцыю з AI_Агульнае.gs)
     Logger.log('🧠 Пачатак генерацыі спісу трэкаў...');
-    const aiResult = callGeminiTextAPI(promptText);
+    const aiResult = callGeminiTextAPI(userPrompt, { systemInstruction });
     const rawAiTracks = parseAiResponse(aiResult.responseText);
      
     if (!rawAiTracks || rawAiTracks.length === 0) {
-      Logger.log('⚠️ AI не вярнуў трэкі. Магчыма, памылка парсінгу.');
-      return;
-    }
-    
-    Logger.log(`✅ AI прапанаваў ${rawAiTracks.length} трэкаў.`);
-    
-    // 4. Захоўваем як тэкставы файл у Google Drive (тэчка "Goofy Data")
-    const fileName = 'AI_Topic_Mix.txt';
-    const textContent = rawAiTracks.join('\n'); // Злучаем масіў радкоў з пераносам радка
-    
-    Cache.write(fileName, textContent);
-    
-    Logger.log(`🎉 Гатова! Файл "${fileName}" паспяхова захаваны ў вашым Google Drive (шукайце ў тэчцы "Goofy Data" ці падтэчцы з вашым ID).`);
-
-  } catch (error) {
-    Logger.log(`❌ КРЫТЫЧНАЯ ПАМЫЛКА: ${error.toString()}`);
-  }
-}
+      Logger.log('⚠️ AI не в
