@@ -1,8 +1,8 @@
 # AI Spotify Playlist Generator
 
-A Google Apps Script project that leverages **Google's Gemini AI & Vertex AI** (Text & Image models with $300 GCP trial support) to generate personalized Spotify playlists, **Pollinations AI** (Flux) as a fallback for unique cover art, and **FlowSort** for seamless DJ-style track transitions.
+A Google Apps Script project that leverages **Google's Gemini 4 & Vertex AI** (`gemini-4-hydrogen`, `gemini-4-neon`, and `gemini-nano-banana-2.1` with $300 GCP trial or free AI Studio tier support) to generate personalized Spotify playlists and unique cover art, **Pollinations AI** (Flux) as a fallback image generator, and **FlowSort** for seamless DJ-style track transitions.
 
-**Current Version:** 6.1 (Dual-Provider Architecture: Vertex AI, Locks, Fallbacks & DNA Cloning)
+**Current Version:** 6.2 (Gemini 4 Engine, Nano Banana 2.1, Structured Outputs & Resilient Search)
 
 ---
 
