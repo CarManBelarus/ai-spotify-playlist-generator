@@ -16,19 +16,28 @@ const GLOBAL_AI_CONFIG = {
   },
 
   TEXT: {
-    MODELS_PRIORITY: [
-      'gemini-3.1-pro-preview',
-      'gemini-3.6-flash',    
-      'gemini-3.1-flash-lite-preview'
+    // Primary model cascade for tracklist generation
+    MAIN_MODELS: [
+      'gemini-4-hydrogen',
+      'gemini-4-neon',
+      'gemini-3.8-flash',
+      'gemini-3.5-flash-lite'
+    ],
+    // Fast model cascade for auxiliary tasks (e.g., cover art prompt generation)
+    FAST_MODELS: [
+      'gemini-4-hydrogen',
+      'gemini-3.8-flash',
+      'gemini-3.5-flash-lite'
     ]
   },
 
   IMAGE: {
     ENABLED: true,
     GEMINI_MODELS_PRIORITY: [
-      'gemini-3.1-flash-image',       
-      'gemini-3-pro-image',           
-      'gemini-3.1-flash-lite-image' 
+      'gemini-nano-banana-2.1',
+      'gemini-3.1-flash-image',
+      'gemini-3.1-flash-lite-image',
+      'gemini-3-pro-image'
     ], 
     POLLINATIONS_MODEL: 'flux' 
   }  
@@ -61,32 +70,66 @@ function getVertexHost_() {
 // 2. TEXT AI ENGINE (GEMINI)
 // =========================================================================
 
-function callGeminiTextAPI(promptText) {
+/**
+ * Calls the Gemini text API (generateContent).
+ * @param {string} promptText - User prompt text
+ * @param {boolean|Object} optionsOrFast - boolean (fast mode) or options object { fast, systemInstruction, responseMimeType, responseSchema, thinkingLevel }
+ */
+function callGeminiTextAPI(promptText, optionsOrFast = false) {
+  if (typeof promptText !== 'string' || !promptText.trim()) {
+    throw new Error('❌ Empty or invalid promptText passed to callGeminiTextAPI.');
+  }
+
+  const opts = typeof optionsOrFast === 'boolean'
+    ? { fast: optionsOrFast }
+    : (optionsOrFast || {});
+
+  const isFast = Boolean(opts.fast);
+  const responseMimeType = opts.responseMimeType || 'application/json';
+  const thinkingLevel = opts.thinkingLevel || (isFast ? 'LOW' : 'MEDIUM');
+  const modelsList = isFast
+    ? GLOBAL_AI_CONFIG.TEXT.FAST_MODELS
+    : GLOBAL_AI_CONFIG.TEXT.MAIN_MODELS;
+
+  const generationConfig = {
+    responseMimeType: responseMimeType,
+    thinkingConfig: { thinkingLevel: thinkingLevel }
+  };
+
+  if (responseMimeType === 'application/json') {
+    generationConfig.responseSchema = opts.responseSchema || {
+      type: 'ARRAY',
+      items: { type: 'STRING' }
+    };
+  }
+
   let aiResponse = null;
   let usedModel = '';
 
-  for (const modelName of GLOBAL_AI_CONFIG.TEXT.MODELS_PRIORITY) {
-    Logger.log(`🔄 Attempting to call model: "${modelName}" via ${GLOBAL_AI_CONFIG.PROVIDER}...`);
-    
-    let url, options;
+  for (const modelName of modelsList) {
+    Logger.log(`🔄 Attempting to call model: "${modelName}" (${GLOBAL_AI_CONFIG.PROVIDER}, thinking=${thinkingLevel})...`);
 
+    const payload = {
+      contents: [{
+        role: 'user',
+        parts: [{ text: promptText }]
+      }],
+      generationConfig: generationConfig
+    };
+
+    if (opts.systemInstruction) {
+      payload.systemInstruction = {
+        parts: [{ text: opts.systemInstruction }]
+      };
+    }
+
+    let url, options;
     if (GLOBAL_AI_CONFIG.PROVIDER === 'VERTEX_AI') {
       const host = getVertexHost_();
       const loc = GLOBAL_AI_CONFIG.VERTEX_AI.LOCATION || 'global';
       const projectId = GLOBAL_AI_CONFIG.VERTEX_AI.PROJECT_ID;
       
       url = `${host}/v1/projects/${projectId}/locations/${loc}/publishers/google/models/${modelName}:generateContent`;
-      
-      const payload = {
-        "contents": [{
-          "role": "user",
-          "parts": [{ "text": promptText }]
-        }],
-        "generationConfig": {
-          "temperature": 1.0,
-          "responseMimeType": "application/json"
-        }
-      };
 
       options = { 
         'method': 'post', 
@@ -96,20 +139,13 @@ function callGeminiTextAPI(promptText) {
         'muteHttpExceptions': true 
       };
     } else {
-      url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${getGeminiKey_()}`;
-      
-      const studioPayload = {
-         "contents": [{"parts":[{"text": promptText}]}],
-         "generationConfig": { 
-           "temperature": 1.1, 
-           "responseMimeType": "application/json" 
-         }
-      };
+      url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
       options = { 
         'method': 'post', 
         'contentType': 'application/json', 
-        'payload': JSON.stringify(studioPayload), 
+        'headers': { 'x-goog-api-key': getGeminiKey_() },
+        'payload': JSON.stringify(payload), 
         'muteHttpExceptions': true 
       };
     }
@@ -121,11 +157,18 @@ function callGeminiTextAPI(promptText) {
       
       if (responseCode === 200) {
         const json = JSON.parse(content);
-        if (json.candidates && json.candidates[0].content && json.candidates[0].content.parts) {
-           aiResponse = json.candidates[0].content.parts[0].text;
-           usedModel = modelName;
-           Logger.log(`✅ Model "${modelName}" successfully generated response.`);
-           break;
+        const parts = json.candidates?.[0]?.content?.parts || [];
+        const text = parts
+          .filter(p => p.text && !p.thought)
+          .map(p => p.text)
+          .join('')
+          .trim();
+
+        if (text) {
+          aiResponse = text;
+          usedModel = modelName;
+          Logger.log(`✅ Model "${modelName}" successfully generated response.`);
+          break;
         }
       } else {
         Logger.log(`⚠️ Model "${modelName}" is unavailable (Code: ${responseCode}). API response: ${content.substring(0, 300)}`);
@@ -182,50 +225,47 @@ function generateAndApplyCover(playlistId, tracks) {
 }
 
 function buildImagePrompt_(tracks) {
-  const trackSample = Selector.sliceRandom(tracks, 50).map(t => `${t.artists[0].name} - ${t.name}`).join('\n');
-  const exampleStyles = "Surrealism, Vintage 70s Sci-Fi Illustration, Minimalist Graphic Design, Abstract Expressionism, Cinematic 35mm Photography, Cyberpunk, Japanese Woodblock print, Glitch Art, Classic Oil Painting, Dark Fantasy, Pop Art";
-  const examplePalettes = "Neon and High Contrast, Muted Autumn Earth Tones, Cold Melancholic Blues, Monochrome with one piercing accent, Pastel watercolors, Dark and Moody, Psychedelic Acid Colors";
-  const instruction  = `<system_instruction>
-    <role>
-        You are a Visionary Art Director and a Music Sociologist. You translate the deep semantic meaning, cultural context, and emotional weight of music into breathtaking visual concepts.
-    </role>
-    <objective>
-        1. Analyze the provided 50-track playlist. Extract the overarching lyrical themes, stories, and cultural context.
-        2. Determine the absolute best visual style and color palette to amplify this specific mood. You can use the provided examples as inspiration, OR choose any other artistic medium that fits better.
-        3. Write a highly detailed text-to-image prompt for an album cover based on this semantic metaphor.
-    </objective>
-    <context_awareness>
-        Treat the following tracklist not as text, but as an emotional landscape. What are these songs ABOUT?
-        [Input Tracks]:
-        ${trackSample}
+  const trackSample = Selector.sliceRandom(tracks, 50)
+    .map(t => `${t.artists[0].name} - ${t.name}`)
+    .join('\n');
 
-        [Examples of Visual Styles]:
-        ${exampleStyles}
+  const systemInstruction = `## Function
+Generate one text-to-image prompt for a square 1:1 playlist cover artwork based on the lyrical themes, cultural context, and emotional atmosphere of the input tracklist. Target image model: Gemini Nano Banana 2.1.
 
-        [Examples of Color Palettes]:
-        ${examplePalettes}
-    </context_awareness>
-    <behavioral_guidelines>
-        1. **Semantic Translation (CRITICAL):** Look at the MEANING of the tracks. Create a surreal or abstract scene that represents the shared storyline or emotion.
-        2. **Absolute Creative Freedom:** You are NOT limited to the provided examples. Choose whatever makes the most artistic sense for this specific genre and mood.
-    </behavioral_guidelines>
-    <strict_constraints>
-        * **NO ROCK PUNS (CRITICAL):** If the music genre is "Rock", YOU ARE STRICTLY FORBIDDEN from drawing literal rocks, stones, boulders, mountains, or monoliths.
-        * **NO LITERAL MUSIC ELEMENTS:** NEVER include musical instruments, notes, vinyl records, cassettes, or audio waves.
-        * **NO TEXT/WORDS:** The image must contain absolutely NO words, NO artist names, NO titles, and NO typography.
-        * **FORMAT:** Output EXACTLY ONE paragraph under 140 words. Written entirely in English.
-        * **RAW OUTPUT ONLY:** Output ONLY the raw image prompt. No JSON, no formatting tags.
-    </strict_constraints>
-</system_instruction>`;
+## Visual Translation Criteria
+- **Semantic metaphor:** Depict a cohesive surreal, symbolic, or abstract scene that translates the shared emotional narrative and cultural mood of the songs into imagery.
+- **Artistic direction:** Select the single visual medium, style, lighting, and color palette that best amplify the mood. Optional inspiration (free to choose any other fitting medium or palette):
+  - Styles: Surrealism, Vintage 70s Sci-Fi Illustration, Minimalist Graphic Design, Abstract Expressionism, Cinematic 35mm Photography, Cyberpunk, Japanese Woodblock Print, Glitch Art, Classic Oil Painting, Dark Fantasy, Pop Art.
+  - Palettes: Neon and High Contrast, Muted Autumn Earth Tones, Cold Melancholic Blues, Monochrome with One Piercing Accent, Pastel Watercolors, Dark and Moody, Psychedelic Acid Colors.
+- **Composition:** Describe an edge-to-edge, full-bleed square painting, illustration, or photograph filling the entire frame directly.
+
+## Semantic Negative Prompting (CRITICAL for Nano Banana 2.1)
+- Describe ONLY what is positively visible in the scene. Never put negative keyword lists or negated forbidden objects (such as "no text", "no typography", "no instruments", "no vinyl", "no rocks", "no borders") inside the output prompt.
+- Achieve clean results purely through positive visual description:
+  - Keep surfaces clean, unlettered, and purely graphic/pictorial.
+  - Use strictly non-musical visual metaphors (landscapes, light, architecture, figures, surreal objects).
+  - For rock or metal playlists, translate energy through atmosphere, light, motion, or abstract forms instead of geological stones, boulders, or mountains.
+
+## Output Specification
+- Exactly one continuous paragraph in English, strictly under 140 words.
+- Raw image-generation prompt only: no markdown, no labels, no preamble.`;
+
+  const userPrompt = `## Playlist Tracklist (50-track sample)
+${trackSample}
+
+Based on the themes, cultural context, and emotional mood of the tracklist above, write one English text-to-image prompt (single paragraph, under 140 words) describing a full-bleed square visual artwork using purely positive semantic phrasing, with clean unlettered surfaces, non-musical metaphors, and zero negative-keyword lists.`;
   
   try {
-    const result = callGeminiTextAPI(instruction);
-    let prompt = result.responseText.replace(/```json|```/g, '').trim();
-    try {
-      const parsed = JSON.parse(prompt);
-      if (parsed.prompt) prompt = parsed.prompt;
-      else if (Array.isArray(parsed) && parsed.length > 0) prompt = parsed[0];
-    } catch(e) {} 
+    const result = callGeminiTextAPI(userPrompt, {
+      fast: true,
+      systemInstruction: systemInstruction,
+      responseMimeType: 'text/plain',
+      thinkingLevel: 'LOW'
+    });
+    const prompt = result.responseText
+      .replace(/^```[\w]*\s*/i, '')
+      .replace(/```$/i, '')
+      .trim();
     
     Logger.log(`✅ Image prompt created: "${prompt.substring(0, 150)}..."`);
     return prompt;
@@ -238,7 +278,20 @@ function buildImagePrompt_(tracks) {
 function callGeminiImageGen_(prompt) {
   for (const modelName of GLOBAL_AI_CONFIG.IMAGE.GEMINI_MODELS_PRIORITY) {
     Logger.log(`🎨 Attempting image generation via ${GLOBAL_AI_CONFIG.PROVIDER} (${modelName})...`);
-    
+
+    const generationConfig = {
+      responseModalities: ['IMAGE'],
+      imageConfig: { aspectRatio: '1:1', imageSize: '1K' }
+    };
+    if (modelName === 'gemini-nano-banana-2.1') {
+      generationConfig.thinkingConfig = { thinkingLevel: 'MINIMAL' };
+    }
+
+    const payload = {
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: generationConfig
+    };
+
     let url, options;
     if (GLOBAL_AI_CONFIG.PROVIDER === 'VERTEX_AI') {
       const host = getVertexHost_();
@@ -246,15 +299,6 @@ function callGeminiImageGen_(prompt) {
       const projectId = GLOBAL_AI_CONFIG.VERTEX_AI.PROJECT_ID;
       
       url = `${host}/v1/projects/${projectId}/locations/${loc}/publishers/google/models/${modelName}:generateContent`;
-      
-      const payload = {
-        "contents": [{ "role": "user", "parts": [{ "text": prompt }] }],
-        "generationConfig": {
-          "responseModalities": ["IMAGE"],
-          "imageConfig": { "aspectRatio": "1:1", "imageSize": "1K" }
-        }
-      };
-      
       options = { 
         'method': 'post', 
         'contentType': 'application/json', 
@@ -263,17 +307,11 @@ function callGeminiImageGen_(prompt) {
         'muteHttpExceptions': true 
       };
     } else {
-      url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${getGeminiKey_()}`;
-      const payload = {
-        "contents": [{ "parts":[{ "text": prompt }] }],
-        "generationConfig": {
-          "responseModalities": ["IMAGE"],
-          "imageConfig": { "aspectRatio": "1:1", "imageSize": "1K" }
-        }
-      };
+      url = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
       options = { 
         'method': 'post', 
         'contentType': 'application/json', 
+        'headers': { 'x-goog-api-key': getGeminiKey_() },
         'payload': JSON.stringify(payload), 
         'muteHttpExceptions': true 
       };
@@ -286,43 +324,40 @@ function callGeminiImageGen_(prompt) {
       
       if (responseCode === 200) {
         const json = JSON.parse(responseText);
-        let rawBase64 = null;
+        const parts = json.candidates?.[0]?.content?.parts || [];
+        const imagePart = parts.find(p => p.inlineData && p.inlineData.data);
 
-        const parts = json.candidates?.[0]?.content?.parts;
-        if (parts) {
-          const imagePart = parts.find(p => p.inlineData && p.inlineData.data);
-          if (imagePart) rawBase64 = imagePart.inlineData.data;
-        }
-
-        if (rawBase64) {
-          let blob = Utilities.newBlob(Utilities.base64Decode(rawBase64), 'image/png').getAs('image/jpeg');
+        if (imagePart) {
+          const rawBase64 = imagePart.inlineData.data;
+          const mimeType = imagePart.inlineData.mimeType || 'image/png';
+          let blob = Utilities.newBlob(Utilities.base64Decode(rawBase64), mimeType).getAs('image/jpeg');
           let base64Payload = Utilities.base64Encode(blob.getBytes());
           let payloadSizeKB = Math.round(base64Payload.length / 1024);
           
           Logger.log(`✅ Image generated. Size: ${payloadSizeKB} KB (Spotify Limit: 250 KB)`);
           
           if (payloadSizeKB > 245) {
-              Logger.log(`⚠️ Payload too large. Initiating Google Drive Compression Pipeline...`);
-              const compressedBlob = compressBlobViaDrive_(blob);
-              if (compressedBlob) {
-                  const compressedBase64 = Utilities.base64Encode(compressedBlob.getBytes());
-                  const newSizeKB = Math.round(compressedBase64.length / 1024);
-                  Logger.log(`✅ Compression successful. New size: ${newSizeKB} KB`);
-                  if (newSizeKB > 245) {
-                      Logger.log('🛑 Image remains too large after compression. Rejected.');
-                      continue;
-                  }
-                  return compressedBase64;
-              } else {
-                  Logger.log('❌ Failed to compress image. Proceeding to next model.');
-                  continue;
+            Logger.log(`⚠️ Payload too large. Initiating Google Drive Compression Pipeline...`);
+            const compressedBlob = compressBlobViaDrive_(blob);
+            if (compressedBlob) {
+              const compressedBase64 = Utilities.base64Encode(compressedBlob.getBytes());
+              const newSizeKB = Math.round(compressedBase64.length / 1024);
+              Logger.log(`✅ Compression successful. New size: ${newSizeKB} KB`);
+              if (newSizeKB > 245) {
+                Logger.log('🛑 Image remains too large after compression. Rejected.');
+                continue;
               }
+              return compressedBase64;
+            } else {
+              Logger.log('❌ Failed to compress image. Proceeding to next model.');
+              continue;
+            }
           }
           return base64Payload;
         }
       } else {
         Logger.log(`🛑 API ERROR (Code ${responseCode}): ${responseText.substring(0, 300)}`);
-        Utilities.sleep(1000);
+        Utilities.sleep(1500);
       }
     } catch (e) {
       Logger.log(`❌ Critical error during image generation: ${e.toString()}`);
@@ -370,6 +405,8 @@ function callPollinationsImageGen_(prompt) {
 
 function executeSmartSearch(rawAiTracks) {
   if (!rawAiTracks || rawAiTracks.length === 0) return [];
+  const searchStartMs = Date.now();
+  const MAX_SEARCH_MS = 120000;
   let allFoundTracks = [], notFoundQueries = [];
 
   Logger.log('\n--- LEVEL 1: Search by original query ---');
@@ -387,7 +424,7 @@ function executeSmartSearch(rawAiTracks) {
     }
   }
 
-  if (stage2Queries.length > 0) {
+  if (stage2Queries.length > 0 && (Date.now() - searchStartMs) < MAX_SEARCH_MS) {
     Logger.log(`\n--- LEVEL 2: Transliteration (${stage2Queries.length} tracks) ---`);
     let stage2Results = fetchSpotifyTracksCustom_(stage2Queries);
     let stage3Originals = [], stage3Queries = [];
@@ -404,7 +441,7 @@ function executeSmartSearch(rawAiTracks) {
       }
     }
 
-    if (stage3Queries.length > 0) {
+    if (stage3Queries.length > 0 && (Date.now() - searchStartMs) < MAX_SEARCH_MS) {
       Logger.log(`\n--- LEVEL 3: Song title only (${stage3Queries.length} tracks) ---`);
       let stage3Results = fetchSpotifyTracksCustom_(stage3Queries);
       for (let i = 0; i < stage3Queries.length; i++) {
@@ -416,6 +453,8 @@ function executeSmartSearch(rawAiTracks) {
           notFoundQueries.push(stage3Originals[i]);
         }
       }
+    } else if (stage3Queries.length > 0) {
+      Logger.log('⏱️ Search time limit reached — skipping Level 3 and proceeding to save.');
     }
   }
 
@@ -433,12 +472,25 @@ function executeSmartSearch(rawAiTracks) {
 }
 
 function fetchSpotifyTracksCustom_(queries) {
-  let urls = queries.map(q => `https://api.spotify.com/v1/search?q=${encodeURIComponent(q.substring(0, 100))}&type=track&limit=5`);
-  return SpotifyRequest.getAll(urls).map(res => {
-    if (res && res.tracks && res.tracks.items) return res.tracks.items;
-    if (res && res.items) return res.items;
-    return [];
-  });
+  const CHUNK_SIZE = 25;
+  const allResults = [];
+
+  for (let i = 0; i < queries.length; i += CHUNK_SIZE) {
+    const chunk = queries.slice(i, i + CHUNK_SIZE);
+    const urls = chunk.map(q => `https://api.spotify.com/v1/search?q=${encodeURIComponent(q.substring(0, 100))}&type=track&limit=5`);
+    const chunkResults = SpotifyRequest.getAll(urls).map(res => {
+      if (res && res.tracks && res.tracks.items) return res.tracks.items;
+      if (res && res.items) return res.items;
+      return [];
+    });
+    allResults.push(...chunkResults);
+
+    if (i + CHUNK_SIZE < queries.length) {
+      Utilities.sleep(500);
+    }
+  }
+
+  return allResults;
 }
 
 function findBestMatchCustom_(query, tracks, originalQuery = null, isTitleOnly = false) {
@@ -501,8 +553,13 @@ function normalizeStrictCustom_(str) {
 
 function translitCyrillicToLatinCustom_(text) {
   if (!text) return "";
-  const map = { 'а':'a','б':'b','в':'v','г':'h','д':'d','е':'je','ё':'jo','ж':'zh','з':'z','і':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p','р':'r','с':'s','т':'t','у':'u','ў':'u','ф':'f','х':'kh','ц':'ts','ч':'ch','ш':'sh','щ':'shch','ы':'y','ь':'','э':'e','ю':'ju','я':'ja','ґ':'g' };
-  return text.split('').map(char => map[char] || char).join('');
+  const map = {
+    'а':'a','б':'b','в':'v','г':'h','д':'d','е':'je','ё':'jo','ж':'zh','з':'z',
+    'і':'i','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o','п':'p',
+    'р':'r','с':'s','т':'t','у':'u','ў':'u','ф':'f','х':'kh','ц':'ts','ч':'ch',
+    'ш':'sh','щ':'shch','ъ':'','ы':'y','ь':'','э':'e','ю':'ju','я':'ja','ґ':'g'
+  };
+  return text.split('').map(char => map[char] ?? char).join('');
 }
 
 function compareStringsCustom_(first, second) {
